@@ -202,6 +202,7 @@ Setup entry point:
       width = 40,
       height = 15,
       auto_refresh = true,
+      auto_open_on_cursor = false,
       indent_markers = true,
       icons = {
         folder_closed = "",

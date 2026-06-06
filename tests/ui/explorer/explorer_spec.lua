@@ -21,10 +21,10 @@ end
 -- Open a fresh CodeDiff explorer for `focus_file` and return (tabpage, explorer).
 -- Earlier tests leave sessions and pending vim.schedule callbacks in the
 -- lifecycle singleton, so flush + cleanup first, then pick up the explorer
--- created by THIS :CodeDiff (the one whose buffer carries the auto-open autocmd).
+-- created by THIS :CodeDiff (the one whose buffer carries the auto-open
+-- buffer-local j keymap).
 local function open_explorer(temp_dir, focus_file)
   local lifecycle = require("codediff.ui.lifecycle")
-  -- Let any pending async from a prior test settle, then drop stale sessions.
   vim.wait(200)
   lifecycle.cleanup_all()
 
@@ -38,13 +38,15 @@ local function open_explorer(temp_dir, focus_file)
       if e and e.winid and vim.api.nvim_win_is_valid(e.winid)
           and e.bufnr and vim.api.nvim_buf_is_valid(e.bufnr)
           and e.current_file_path ~= nil then
-        -- Pick the explorer wired with the auto-open autocmd; leftover
+        -- Pick the explorer wired with the auto-open j/k keymap; leftover
         -- explorers from prior tests (default config) lack it.
-        local autocmds = vim.api.nvim_get_autocmds({ event = "CursorMoved", buffer = e.bufnr })
-        if #autocmds > 0 then
-          tabpage = tp
-          explorer = e
-          return true
+        local maps = vim.api.nvim_buf_get_keymap(e.bufnr, "n")
+        for _, m in ipairs(maps) do
+          if m.lhs == "j" and (m.desc or ""):find("codediff: move and auto%-open") then
+            tabpage = tp
+            explorer = e
+            return true
+          end
         end
       end
     end
@@ -478,22 +480,22 @@ describe("Explorer Mode", function()
     assert.is_true(notified, "Should notify for non-git directory")
   end)
 
-  -- Test: auto_open_on_cursor opens the file under cursor when navigating with j/k
+  -- Test: auto_open_on_cursor opens the file under cursor after j/k
   it("Auto-opens diff under cursor when auto_open_on_cursor is enabled", function()
     require("codediff").setup({
       diff = { layout = "side-by-side" },
-      explorer = { auto_open_on_cursor = true, auto_open_debounce_ms = 20 },
+      explorer = { auto_open_on_cursor = true },
     })
 
     local ready, tabpage, explorer = open_explorer(temp_dir, "file1.txt")
     assert.is_true(ready, "Explorer should be ready with an initial selection")
-    -- Ensure the explorer's tab is current so cursor movement targets it
     vim.api.nvim_set_current_tabpage(tabpage)
 
     local initial_path = explorer.current_file_path
     local initial_group = explorer.current_file_group
 
-    -- Find a file node on a different line than the current selection
+    -- Find a file node and its delta from the current cursor line.
+    local cur_line = vim.api.nvim_win_get_cursor(explorer.winid)[1]
     local target_line, target_path, target_group
     local line_count = vim.api.nvim_buf_line_count(explorer.bufnr)
     for line = 1, line_count do
@@ -512,27 +514,25 @@ describe("Explorer Mode", function()
     end
     assert.is_not_nil(target_line, "Should find a second file node to navigate to")
 
-    -- Move the cursor onto the target file's line, then fire CursorMoved.
-    -- nvim_win_set_cursor does not emit CursorMoved in headless tests, so we
-    -- trigger it explicitly to simulate j/k navigation.
+    -- Press j (or k) the right number of times to reach the target line.
+    -- 'tx' flag = typed + execute, which lets buffer-local mappings fire.
     vim.api.nvim_set_current_win(explorer.winid)
-    vim.api.nvim_win_set_cursor(explorer.winid, { target_line, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = explorer.bufnr })
+    local motion = target_line > cur_line and "j" or "k"
+    local count = math.abs(target_line - cur_line)
+    vim.api.nvim_feedkeys(string.rep(motion, count), "tx", false)
 
-    -- Wait for the debounced CursorMoved handler to fire on_file_select
     local opened = vim.wait(2000, function()
       return explorer.current_file_path == target_path
         and explorer.current_file_group == target_group
     end, 20)
-    assert.is_true(opened, "Cursor movement on a file node should auto-open its diff")
+    assert.is_true(opened, "j/k on a file node should auto-open its diff")
   end)
 
-  it("Ignores cursor moves over group/directory nodes when auto_open_on_cursor is enabled", function()
+  it("Ignores j/k landing on group/directory nodes when auto_open_on_cursor is enabled", function()
     require("codediff").setup({
       diff = { layout = "side-by-side" },
       explorer = {
         auto_open_on_cursor = true,
-        auto_open_debounce_ms = 20,
         view_mode = "tree", -- ensure directory nodes are present
       },
     })
@@ -543,33 +543,39 @@ describe("Explorer Mode", function()
 
     local ready, tabpage, explorer = open_explorer(temp_dir, "file1.txt")
     assert.is_true(ready, "Explorer should be ready")
-    -- Ensure the explorer's tab is current so cursor movement targets it
     vim.api.nvim_set_current_tabpage(tabpage)
 
-    local initial_path = explorer.current_file_path
-    local initial_group = explorer.current_file_group
-
-    -- Find a group or directory line
-    local skip_line
+    -- Find a line immediately before a group/directory node — pressing j
+    -- once will land us on it.
+    local skip_line, jump_from_line
     local line_count = vim.api.nvim_buf_line_count(explorer.bufnr)
-    for line = 1, line_count do
-      local node = explorer.tree:get_node(line)
+    for line = 1, line_count - 1 do
+      local node = explorer.tree:get_node(line + 1)
       if node and node.data and (node.data.type == "group" or node.data.type == "directory") then
-        skip_line = line
+        skip_line = line + 1
+        jump_from_line = line
         break
       end
     end
     assert.is_not_nil(skip_line, "Should find a group/directory node line")
 
     vim.api.nvim_set_current_win(explorer.winid)
-    vim.api.nvim_win_set_cursor(explorer.winid, { skip_line, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = explorer.bufnr })
+    vim.api.nvim_win_set_cursor(explorer.winid, { jump_from_line, 0 })
 
-    -- Wait past the debounce window and verify selection did NOT change
+    -- Capture state *after* manual cursor placement (which itself doesn't
+    -- trigger our keymap, only j/k do).
+    local before_path = explorer.current_file_path
+    local before_group = explorer.current_file_group
+
+    -- One j: lands on the skip_line (which is a group/dir).
+    vim.api.nvim_feedkeys("j", "tx", false)
+
     vim.wait(150)
-    assert.equals(initial_path, explorer.current_file_path,
+    -- After landing on a group/dir, current_file_path must not have changed
+    -- from before the j keypress.
+    assert.equals(before_path, explorer.current_file_path,
       "Group/directory nodes should not trigger auto-open")
-    assert.equals(initial_group, explorer.current_file_group,
+    assert.equals(before_group, explorer.current_file_group,
       "Group/directory nodes should not change current group")
   end)
 

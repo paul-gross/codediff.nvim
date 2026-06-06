@@ -64,8 +64,7 @@ M.defaults = {
       ignore = { ".git/**", ".jj/**" }, -- Glob patterns to hide (e.g., {"*.lock", "dist/*"})
     },
     focus_on_select = false, -- Jump to modified pane after selecting a file (default: stay in explorer)
-    auto_open_on_cursor = false, -- Auto-open diff for the file under cursor while moving (j/k) in the explorer
-    auto_open_debounce_ms = 80, -- Debounce window (ms) for auto_open_on_cursor so fast j/k traversal doesn't spam loads
+    auto_open_on_cursor = false, -- Rebind j/k/Down/Up in the explorer to also open the file under the cursor
     flatten_dirs = true, -- Flatten single-child directory chains in tree view (e.g., src/components/ui/)
     status_right_margin = 1, -- Trailing cells between the status symbol (M/A/D) and the right edge; increase if Nerd Font icons clip it
     visible_groups = { -- Which groups to show in explorer (can be toggled at runtime)
