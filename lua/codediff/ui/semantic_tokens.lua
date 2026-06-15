@@ -35,6 +35,37 @@ local compat = require("codediff.core.compat")
 -- Namespace for semantic token highlights
 local ns_semantic = api.nvim_create_namespace("codediff_semantic_tokens")
 
+-- Track the virtual documents we have opened on a language server via
+-- textDocument/didOpen, keyed by the virtual buffer number.
+-- { [bufnr] = { client = <lsp client>, uri = <string> } }
+--
+-- A virtual buffer holds a fixed git revision, so once opened it never needs
+-- re-opening or didChange. We use this registry to (a) send didOpen exactly
+-- once per buffer instead of on every re-render, and (b) send a matching
+-- didClose when the buffer is destroyed by ANY teardown path. Without this,
+-- file navigation (]f/[f) re-sent didOpen on every hop and never sent
+-- didClose, leaving the server with an unbounded, ever-growing set of open
+-- documents that slowed every later request across the whole session (#1).
+local opened_documents = {}
+
+-- Augroup for the per-buffer "close on destroy" autocommands.
+local close_augroup = api.nvim_create_augroup("codediff_semantic_tokens_close", { clear = true })
+
+--- Send textDocument/didClose for a virtual buffer we previously opened.
+--- Idempotent: a second call for the same buffer (e.g. session cleanup after
+--- the buffer was already wiped during navigation) is a no-op.
+---@param bufnr integer
+function M.notify_close(bufnr)
+  local entry = opened_documents[bufnr]
+  if not entry then
+    return
+  end
+  opened_documents[bufnr] = nil
+  pcall(compat.lsp_notify, entry.client, "textDocument/didClose", {
+    textDocument = { uri = entry.uri },
+  })
+end
+
 -- ============================================================================
 -- VENDORED FROM: vim/lsp/semantic_tokens.lua
 -- ============================================================================
@@ -193,17 +224,32 @@ function M.apply_semantic_tokens(left_buf, right_buf)
   -- Get language ID from right buffer's filetype
   local language_id = vim.bo[right_buf].filetype or "text"
 
-  -- First, notify LSP about this virtual file via textDocument/didOpen
-  local didopen_params = {
-    textDocument = {
-      uri = left_uri,
-      languageId = language_id,
-      version = 1,
-      text = left_text,
-    },
-  }
+  -- Notify the server about this virtual file exactly once. Re-sending
+  -- didOpen on every render (each ]f/[f hop re-renders) made the server
+  -- re-parse repeatedly and, with no matching didClose, accumulate an
+  -- unbounded set of open documents that slowed the whole session (#1).
+  -- The matching didClose is sent from M.notify_close when the buffer is
+  -- destroyed by any teardown path (navigation swap, cleanup, :q).
+  if not opened_documents[left_buf] then
+    compat.lsp_notify(client, "textDocument/didOpen", {
+      textDocument = {
+        uri = left_uri,
+        languageId = language_id,
+        version = 1,
+        text = left_text,
+      },
+    })
+    opened_documents[left_buf] = { client = client, uri = left_uri }
 
-  compat.lsp_notify(client, "textDocument/didOpen", didopen_params)
+    api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
+      group = close_augroup,
+      buffer = left_buf,
+      once = true,
+      callback = function()
+        M.notify_close(left_buf)
+      end,
+    })
+  end
 
   -- Now request semantic tokens for this file
   local params = {

@@ -185,6 +185,31 @@ end
 - Analyzes the buffer's actual content (git historical version)
 - Tokens are accurate for that version!
 
+#### Document lifecycle: `didOpen` once, `didClose` on destroy
+
+`semantic_tokens.lua` (`lua/codediff/ui/semantic_tokens.lua`) owns the
+`textDocument/didOpen`/`didClose` lifecycle for every virtual document it
+registers with a language server, tracked in `opened_documents` keyed by buffer:
+
+- **Open exactly once.** A virtual buffer holds a fixed git revision, so its
+  content never changes — `didOpen` is sent the first time a buffer is rendered
+  and skipped on every later re-render. (Re-sending it on each render made
+  servers re-parse repeatedly.)
+- **Close on any teardown.** When the buffer is opened, a one-shot
+  `BufWipeout`/`BufDelete` autocmd is registered that sends the matching
+  `didClose` via `M.notify_close(bufnr)`. This fires no matter which path
+  destroys the buffer — file navigation (`]f`/`[f`) swapping in a new diff,
+  session cleanup, or `:q`. `notify_close` is idempotent.
+
+**Invariant:** every `didOpen` is balanced by exactly one `didClose`. This must
+hold or the server accumulates an unbounded set of open `codediff://` documents,
+slowing every later request across the whole session and degrading navigation
+latency over time (issue #1). The regression guard is
+`tests/ui/lifecycle/semantic_token_leak_spec.lua`. **Do not** re-introduce a
+`didOpen` that isn't gated by `opened_documents`, and do not delete a virtual
+buffer that had semantic tokens applied without routing through `notify_close`
+(buffer-death autocmd or an explicit call, as `cleanup.lua` does).
+
 ---
 
 ## Benefits
@@ -312,6 +337,8 @@ Tested with headless Neovim:
 - Cleanup autocmds after highlights applied
 - Proper readonly/modifiable settings
 - No buffer leaks
+- No LSP document leaks — every `didOpen` is balanced by a `didClose` on buffer
+  destroy (see "Document lifecycle" above)
 
 ✅ **Window Management:**
 - Cursor positioning for virtual files
