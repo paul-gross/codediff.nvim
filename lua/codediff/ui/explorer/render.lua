@@ -269,6 +269,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
               git_root = git_root,
               rel_path = file_path,
               side = "modified",
+              whole_file_side = "modified",
             })
           else
             require("codediff.ui.view.side_by_side").show_added_virtual_file(tabpage, git_root, file_path, target_revision)
@@ -280,6 +281,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
               git_root = git_root,
               rel_path = file_path,
               side = "modified",
+              whole_file_side = "modified",
             })
           else
             require("codediff.ui.view.side_by_side").show_added_virtual_file(tabpage, git_root, file_path, ":0")
@@ -316,6 +318,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
               git_root = git_root,
               rel_path = file_path,
               side = "original",
+              whole_file_side = "original",
             })
           else
             require("codediff.ui.view.side_by_side").show_deleted_virtual_file(tabpage, git_root, file_path, base_revision)
@@ -328,6 +331,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
               git_root = git_root,
               rel_path = file_path,
               side = "original",
+              whole_file_side = "original",
             })
           else
             require("codediff.ui.view.side_by_side").show_deleted_file(tabpage, git_root, file_path, abs_path, group)

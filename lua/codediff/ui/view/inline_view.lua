@@ -529,11 +529,45 @@ end
 -- Show single file (no diff) for inline mode
 -- ============================================================================
 
+--- Build a synthetic whole-file diff and apply inline highlights to a single buffer.
+--- For side="original" all lines appear as deleted virt_lines; for "modified" as green inserts.
+--- Returns the synthetic diff so the caller can store it in lifecycle state.
+---@param bufnr number Buffer containing the file content (the window's buffer)
+---@param side "original"|"modified"
+---@return table synth_diff
+local function apply_whole_file_highlights_inline(bufnr, side)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local n = #lines
+  local synth_diff
+  if n == 0 then
+    synth_diff = { changes = {}, moves = {} }
+  else
+    local full_range = { start_line = 1, end_line = n + 1 }
+    local empty_range = { start_line = 1, end_line = 1 }
+    if side == "original" then
+      -- Deleted file: show all content as deleted virt_lines above the empty modified buffer
+      synth_diff = {
+        changes = { { original = full_range, modified = empty_range, inner_changes = {} } },
+        moves = {},
+      }
+      inline.render_inline_diff(bufnr, synth_diff, lines, {})
+    else
+      -- Added file: show all content as inserted (green) lines
+      synth_diff = {
+        changes = { { original = empty_range, modified = full_range, inner_changes = {} } },
+        moves = {},
+      }
+      inline.render_inline_diff(bufnr, synth_diff, {}, lines)
+    end
+  end
+  return synth_diff
+end
+
 --- Display a single file in the inline diff window without any diff decorations.
 --- Used for untracked (??), added (A), and deleted (D) files in explorer/history.
 ---@param tabpage number
 ---@param file_path string Path to load (absolute for real files)
----@param opts? { revision: string?, git_root: string?, rel_path: string? }
+---@param opts? { revision: string?, git_root: string?, rel_path: string?, whole_file_side: "original"|"modified"|nil }
 function M.show_single_file(tabpage, file_path, opts)
   opts = opts or {}
   local session = lifecycle.get_session(tabpage)
@@ -599,6 +633,35 @@ function M.show_single_file(tabpage, file_path, opts)
 
   local view_keymaps = require("codediff.ui.view.keymaps")
   view_keymaps.setup_all_keymaps(tabpage, orig_bufnr, mod_bufnr, session.mode == "explorer")
+
+  -- Apply whole-file highlights when the caller signals a fully deleted/added file.
+  -- Untracked files (whole_file_side = nil) are left unhighlighted.
+  if opts.whole_file_side then
+    local wf_side = opts.whole_file_side
+    local bufname = vim.api.nvim_buf_get_name(file_bufnr)
+    local is_virtual = bufname:sub(1, #"codediff://") == "codediff://"
+
+    if is_virtual then
+      -- Content loads asynchronously via BufReadCmd → CodeDiffVirtualFileLoaded
+      local augroup = vim.api.nvim_create_augroup("CodeDiffInlineSingleFileHL_" .. tabpage, { clear = true })
+      vim.api.nvim_create_autocmd("User", {
+        group = augroup,
+        pattern = "CodeDiffVirtualFileLoaded",
+        callback = function(event)
+          if event.data and event.data.buf == file_bufnr then
+            vim.api.nvim_del_augroup_by_id(augroup)
+            local synth_diff = apply_whole_file_highlights_inline(file_bufnr, wf_side)
+            lifecycle.update_diff_result(tabpage, synth_diff)
+          end
+        end,
+      })
+    else
+      -- Real file: content already present, apply immediately
+      local synth_diff = apply_whole_file_highlights_inline(file_bufnr, wf_side)
+      lifecycle.update_diff_result(tabpage, synth_diff)
+    end
+  end
+
   layout.arrange(tabpage)
   welcome_window.sync_later(mod_win)
 end
@@ -639,5 +702,8 @@ function M.show_welcome(tabpage, load_bufnr)
   layout.arrange(tabpage)
   welcome_window.sync_later(mod_win)
 end
+
+--- Exported for testing: apply whole-file inline highlights to a buffer (no async, no lifecycle).
+M._apply_whole_file_highlights_inline = apply_whole_file_highlights_inline
 
 return M

@@ -311,6 +311,7 @@ function M.create(commits, git_root, tabpage, width, opts)
             git_root = git_root,
             rel_path = path,
             side = file_status == "D" and "original" or "modified",
+            whole_file_side = file_status == "D" and "original" or "modified",
           })
         else
           if file_status == "A" then

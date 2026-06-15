@@ -494,3 +494,120 @@ describe("Render Core", function()
     vim.api.nvim_buf_delete(buf, {force = true})
   end)
 end)
+
+-- ===========================================================================
+-- Whole-file highlight helpers (fix: deleted/added file single-pane view)
+-- ===========================================================================
+-- These tests exercise the NEW helpers added to fix the bug where fully-deleted
+-- (git status D) and fully-added (git status A) files showed no diff highlights
+-- in single-pane view.  A test that only calls core.render_diff would pass even
+-- WITHOUT the fix (render_diff already worked); these tests call the actual
+-- helpers that the view paths invoke.
+
+describe("Whole-file highlight helpers", function()
+  before_each(function()
+    highlights.setup()
+  end)
+
+  -- Test 20: apply_whole_file_highlights paints every line with CodeDiffLineDelete for "original"
+  it("apply_whole_file_highlights highlights all lines CodeDiffLineDelete for deleted file", function()
+    local side_by_side = require("codediff.ui.view.side_by_side")
+    local buf = vim.api.nvim_create_buf(false, true)
+    local content = {"line one", "line two", "line three"}
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, content)
+
+    side_by_side._apply_whole_file_highlights(buf, "original")
+
+    local marks = vim.api.nvim_buf_get_extmarks(buf, highlights.ns_highlight, 0, -1, { details = true })
+    assert.equal(#content, #marks, "Each content line should have one highlight extmark")
+    for _, mark in ipairs(marks) do
+      assert.equal("CodeDiffLineDelete", mark[4].hl_group, "Highlight group must be CodeDiffLineDelete")
+    end
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  -- Test 21: apply_whole_file_highlights paints every line with CodeDiffLineInsert for "modified"
+  it("apply_whole_file_highlights highlights all lines CodeDiffLineInsert for added file", function()
+    local side_by_side = require("codediff.ui.view.side_by_side")
+    local buf = vim.api.nvim_create_buf(false, true)
+    local content = {"alpha", "beta", "gamma", "delta"}
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, content)
+
+    side_by_side._apply_whole_file_highlights(buf, "modified")
+
+    local marks = vim.api.nvim_buf_get_extmarks(buf, highlights.ns_highlight, 0, -1, { details = true })
+    assert.equal(#content, #marks, "Each content line should have one highlight extmark")
+    for _, mark in ipairs(marks) do
+      assert.equal("CodeDiffLineInsert", mark[4].hl_group, "Highlight group must be CodeDiffLineInsert")
+    end
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  -- Test 22: apply_whole_file_highlights handles a single-line buffer (minimum nvim buffer size)
+  it("apply_whole_file_highlights handles a single-line deleted file", function()
+    local side_by_side = require("codediff.ui.view.side_by_side")
+    local buf = vim.api.nvim_create_buf(false, true)
+    local content = {"only line"}
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, content)
+
+    side_by_side._apply_whole_file_highlights(buf, "original")
+
+    local marks = vim.api.nvim_buf_get_extmarks(buf, highlights.ns_highlight, 0, -1, { details = true })
+    assert.equal(1, #marks, "Single-line buffer should have exactly one highlight extmark")
+    assert.equal("CodeDiffLineDelete", marks[1][4].hl_group, "Highlight group must be CodeDiffLineDelete")
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  -- Test 23: inline apply_whole_file_highlights_inline — deleted file shows virt_lines
+  it("apply_whole_file_highlights_inline shows deleted content as virt_lines for 'original'", function()
+    local inline_view = require("codediff.ui.view.inline_view")
+    local inline = require("codediff.ui.inline")
+    local buf = vim.api.nvim_create_buf(false, true)
+    local content = {"del one", "del two"}
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, content)
+
+    inline_view._apply_whole_file_highlights_inline(buf, "original")
+
+    -- Deleted lines appear as virt_lines extmarks on ns_inline, not ns_highlight
+    local marks = vim.api.nvim_buf_get_extmarks(buf, inline.ns_inline, 0, -1, { details = true })
+    assert.is_true(#marks > 0, "Deleted content should produce virt_lines extmarks on ns_inline")
+    -- The extmark should have virt_lines with CodeDiffLineDelete styling
+    local found_deleted = false
+    for _, mark in ipairs(marks) do
+      if mark[4].virt_lines then
+        for _, vline in ipairs(mark[4].virt_lines) do
+          for _, chunk in ipairs(vline) do
+            if chunk[2] and chunk[2]:find("CodeDiffLineDelete") then
+              found_deleted = true
+            end
+          end
+        end
+      end
+    end
+    assert.is_true(found_deleted, "virt_lines should include CodeDiffLineDelete styling for deleted content")
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  -- Test 24: inline apply_whole_file_highlights_inline — added file highlights ns_inline
+  it("apply_whole_file_highlights_inline highlights added content for 'modified'", function()
+    local inline_view = require("codediff.ui.view.inline_view")
+    local inline = require("codediff.ui.inline")
+    local buf = vim.api.nvim_create_buf(false, true)
+    local content = {"add one", "add two", "add three"}
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, content)
+
+    inline_view._apply_whole_file_highlights_inline(buf, "modified")
+
+    local marks = vim.api.nvim_buf_get_extmarks(buf, inline.ns_inline, 0, -1, { details = true })
+    assert.equal(#content, #marks, "Each added line should have one ns_inline extmark")
+    for _, mark in ipairs(marks) do
+      assert.equal("CodeDiffLineInsert", mark[4].hl_group, "Added lines must use CodeDiffLineInsert")
+    end
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+end)

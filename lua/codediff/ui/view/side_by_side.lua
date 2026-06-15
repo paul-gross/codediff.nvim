@@ -690,10 +690,43 @@ end
 -- Single-file display (no diff) for explorer special cases
 -- ============================================================================
 
+--- Build a synthetic whole-file diff and apply line highlights to a single buffer.
+--- For side="original" every line gets CodeDiffLineDelete; for "modified" CodeDiffLineInsert.
+--- Returns the synthetic diff so the caller can store it in lifecycle state.
+---@param bufnr number Buffer containing the file content
+---@param side "original"|"modified"
+---@return table synth_diff  The diff stored in lifecycle
+local function apply_whole_file_highlights(bufnr, side)
+  local core = require("codediff.ui.core")
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local n = #lines
+  local synth_diff
+  if n == 0 then
+    synth_diff = { changes = {}, moves = {} }
+  else
+    -- One change covering all N lines on the active side; opposite side empty.
+    local full_range = { start_line = 1, end_line = n + 1 }
+    local empty_range = { start_line = 1, end_line = 1 }
+    if side == "original" then
+      synth_diff = {
+        changes = { { original = full_range, modified = empty_range, inner_changes = {} } },
+        moves = {},
+      }
+    else
+      synth_diff = {
+        changes = { { original = empty_range, modified = full_range, inner_changes = {} } },
+        moves = {},
+      }
+    end
+  end
+  core.render_single_buffer(bufnr, synth_diff, side)
+  return synth_diff
+end
+
 --- Core implementation for showing a single file without diff.
 --- Closes the empty pane and loads the file into the remaining pane.
 ---@param tabpage number
----@param opts { keep: "original"|"modified", load_bufnr: number, original_path: string, modified_path: string, original_revision: string?, modified_revision: string? }
+---@param opts { keep: "original"|"modified", load_bufnr: number, original_path: string, modified_path: string, original_revision: string?, modified_revision: string?, whole_file_side: "original"|"modified"|nil }
 local function show_single_file(tabpage, opts)
   local session = lifecycle.get_session(tabpage)
   if not session then
@@ -767,6 +800,35 @@ local function show_single_file(tabpage, opts)
 
     local view_keymaps = require("codediff.ui.view.keymaps")
     view_keymaps.setup_all_keymaps(tabpage, orig_bufnr, mod_bufnr, session.mode == "explorer")
+
+    -- Apply whole-file highlights when the caller signals a fully deleted/added file.
+    -- Untracked files (whole_file_side = nil) are left unhighlighted.
+    if opts.whole_file_side then
+      local wf_side = opts.whole_file_side
+      local wf_bufnr = opts.load_bufnr
+      local bufname = vim.api.nvim_buf_get_name(wf_bufnr)
+      local is_virtual = bufname:sub(1, #"codediff://") == "codediff://"
+
+      if is_virtual then
+        -- Content loads asynchronously via BufReadCmd → CodeDiffVirtualFileLoaded
+        local augroup = vim.api.nvim_create_augroup("CodeDiffSingleFileHL_" .. tabpage, { clear = true })
+        vim.api.nvim_create_autocmd("User", {
+          group = augroup,
+          pattern = "CodeDiffVirtualFileLoaded",
+          callback = function(event)
+            if event.data and event.data.buf == wf_bufnr then
+              vim.api.nvim_del_augroup_by_id(augroup)
+              local synth_diff = apply_whole_file_highlights(wf_bufnr, wf_side)
+              lifecycle.update_diff_result(tabpage, synth_diff)
+            end
+          end,
+        })
+      else
+        -- Real file: content already present, apply immediately
+        local synth_diff = apply_whole_file_highlights(wf_bufnr, wf_side)
+        lifecycle.update_diff_result(tabpage, synth_diff)
+      end
+    end
   end
 
   layout.arrange(tabpage)
@@ -813,6 +875,7 @@ function M.show_deleted_file(tabpage, git_root, file_path, abs_path, group)
     rel_path = file_path,
     original_path = abs_path,
     original_revision = revision,
+    whole_file_side = "original",
   })
 end
 
@@ -827,6 +890,7 @@ function M.show_added_virtual_file(tabpage, git_root, file_path, revision)
     rel_path = file_path,
     modified_path = file_path,
     modified_revision = revision,
+    whole_file_side = "modified",
   })
 end
 
@@ -841,6 +905,7 @@ function M.show_deleted_virtual_file(tabpage, git_root, file_path, revision)
     rel_path = file_path,
     original_path = file_path,
     original_revision = revision,
+    whole_file_side = "original",
   })
 end
 
@@ -851,5 +916,8 @@ function M.show_welcome(tabpage, load_bufnr)
     load_bufnr = load_bufnr,
   })
 end
+
+--- Exported for testing: apply whole-file highlights to a buffer (no async, no lifecycle).
+M._apply_whole_file_highlights = apply_whole_file_highlights
 
 return M
