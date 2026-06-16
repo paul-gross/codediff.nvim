@@ -809,8 +809,11 @@ local function show_single_file(tabpage, opts)
       local bufname = vim.api.nvim_buf_get_name(wf_bufnr)
       local is_virtual = bufname:sub(1, #"codediff://") == "codediff://"
 
-      if is_virtual then
-        -- Content loads asynchronously via BufReadCmd → CodeDiffVirtualFileLoaded
+      if is_virtual and not vim.b[wf_bufnr].codediff_virtual_loaded then
+        -- Content still loading asynchronously via BufReadCmd. Apply highlights
+        -- once it arrives (CodeDiffVirtualFileLoaded). A subsequent re-render
+        -- that runs after the load completes takes the immediate branch below,
+        -- which re-applies highlights cleared at the top of this function.
         local augroup = vim.api.nvim_create_augroup("CodeDiffSingleFileHL_" .. tabpage, { clear = true })
         vim.api.nvim_create_autocmd("User", {
           group = augroup,
@@ -824,7 +827,8 @@ local function show_single_file(tabpage, opts)
           end,
         })
       else
-        -- Real file: content already present, apply immediately
+        -- Real file, or virtual buffer whose content has already loaded:
+        -- content is present, apply immediately.
         local synth_diff = apply_whole_file_highlights(wf_bufnr, wf_side)
         lifecycle.update_diff_result(tabpage, synth_diff)
       end

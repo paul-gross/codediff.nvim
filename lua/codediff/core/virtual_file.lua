@@ -11,6 +11,15 @@ local api = vim.api
 local function load_virtual_buffer_content(buf, git_root, commit, filepath)
   local git = require("codediff.core.git")
 
+  -- Content fetch below is async. Clear the loaded flag up front so that during
+  -- the in-flight window — including a refresh_buffer re-fetch of a mutable
+  -- revision (:0), where the buffer already held older content — synchronous
+  -- callers treat the buffer as "not yet loaded" and wait for the event rather
+  -- than acting on stale content. It is set true again once content lands.
+  if api.nvim_buf_is_valid(buf) then
+    vim.b[buf].codediff_virtual_loaded = false
+  end
+
   git.get_file_content(commit, git_root, filepath, function(err, lines)
     vim.schedule(function()
       -- Check buffer is still valid (might have been deleted during async fetch)
@@ -31,6 +40,10 @@ local function load_virtual_buffer_content(buf, git_root, commit, filepath)
           vim.cmd("noautocmd setlocal filetype=")
         end)
         vim.diagnostic.enable(false, { bufnr = buf })
+
+        -- Mark content as loaded so synchronous callers can detect a buffer
+        -- that has already finished loading and skip waiting on the event.
+        vim.b[buf].codediff_virtual_loaded = true
 
         -- Fire loaded event so diff rendering proceeds
         api.nvim_exec_autocmds("User", {
@@ -71,6 +84,10 @@ local function load_virtual_buffer_content(buf, git_root, commit, filepath)
 
       -- Disable diagnostics for this buffer completely
       vim.diagnostic.enable(false, { bufnr = buf })
+
+      -- Mark content as loaded so synchronous callers can detect a buffer
+      -- that has already finished loading and skip waiting on the event.
+      vim.b[buf].codediff_virtual_loaded = true
 
       api.nvim_exec_autocmds("User", {
         pattern = "CodeDiffVirtualFileLoaded",

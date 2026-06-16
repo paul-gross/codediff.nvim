@@ -561,8 +561,11 @@ describe("Whole-file highlight helpers", function()
     vim.api.nvim_buf_delete(buf, { force = true })
   end)
 
-  -- Test 23: inline apply_whole_file_highlights_inline — deleted file shows virt_lines
-  it("apply_whole_file_highlights_inline shows deleted content as virt_lines for 'original'", function()
+  -- Test 23: inline apply_whole_file_highlights_inline — deleted file paints every
+  -- real line CodeDiffLineDelete (NOT virt_lines). The inline single-file buffer
+  -- already holds the deleted content as real lines, so emitting deleted virt_lines
+  -- would render a duplicate ghost copy on top of them.
+  it("apply_whole_file_highlights_inline paints real lines CodeDiffLineDelete for 'original'", function()
     local inline_view = require("codediff.ui.view.inline_view")
     local inline = require("codediff.ui.inline")
     local buf = vim.api.nvim_create_buf(false, true)
@@ -571,23 +574,12 @@ describe("Whole-file highlight helpers", function()
 
     inline_view._apply_whole_file_highlights_inline(buf, "original")
 
-    -- Deleted lines appear as virt_lines extmarks on ns_inline, not ns_highlight
     local marks = vim.api.nvim_buf_get_extmarks(buf, inline.ns_inline, 0, -1, { details = true })
-    assert.is_true(#marks > 0, "Deleted content should produce virt_lines extmarks on ns_inline")
-    -- The extmark should have virt_lines with CodeDiffLineDelete styling
-    local found_deleted = false
+    assert.equal(#content, #marks, "Each deleted line should have one ns_inline extmark")
     for _, mark in ipairs(marks) do
-      if mark[4].virt_lines then
-        for _, vline in ipairs(mark[4].virt_lines) do
-          for _, chunk in ipairs(vline) do
-            if chunk[2] and chunk[2]:find("CodeDiffLineDelete") then
-              found_deleted = true
-            end
-          end
-        end
-      end
+      assert.equal("CodeDiffLineDelete", mark[4].hl_group, "Deleted lines must use CodeDiffLineDelete")
+      assert.is_nil(mark[4].virt_lines, "Whole-file deletion must not emit duplicate ghost virt_lines")
     end
-    assert.is_true(found_deleted, "virt_lines should include CodeDiffLineDelete styling for deleted content")
 
     vim.api.nvim_buf_delete(buf, { force = true })
   end)

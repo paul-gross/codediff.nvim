@@ -529,37 +529,53 @@ end
 -- Show single file (no diff) for inline mode
 -- ============================================================================
 
---- Build a synthetic whole-file diff and apply inline highlights to a single buffer.
---- For side="original" all lines appear as deleted virt_lines; for "modified" as green inserts.
---- Returns the synthetic diff so the caller can store it in lifecycle state.
+--- Apply whole-file inline highlights to a single buffer.
+--- The inline single-file buffer already holds the file's full content as real
+--- lines (the deleted content for side="original", the added content for
+--- "modified"), so every line is painted directly — red for a deletion, green
+--- for an addition. We deliberately do NOT emit deleted virt_lines here: that is
+--- how inline normally renders deletions *interspersed* in a surviving buffer,
+--- but for a whole-file deletion the lines are already present as real text, so
+--- virt_lines would render a duplicate ghost copy on top of them.
+--- Returns a synthetic diff so the caller can store it in lifecycle state.
 ---@param bufnr number Buffer containing the file content (the window's buffer)
 ---@param side "original"|"modified"
 ---@return table synth_diff
 local function apply_whole_file_highlights_inline(bufnr, side)
+  inline.clear(bufnr)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local n = #lines
-  local synth_diff
   if n == 0 then
-    synth_diff = { changes = {}, moves = {} }
-  else
-    local full_range = { start_line = 1, end_line = n + 1 }
-    local empty_range = { start_line = 1, end_line = 1 }
-    if side == "original" then
-      -- Deleted file: show all content as deleted virt_lines above the empty modified buffer
-      synth_diff = {
-        changes = { { original = full_range, modified = empty_range, inner_changes = {} } },
-        moves = {},
-      }
-      inline.render_inline_diff(bufnr, synth_diff, lines, {})
-    else
-      -- Added file: show all content as inserted (green) lines
-      synth_diff = {
-        changes = { { original = empty_range, modified = full_range, inner_changes = {} } },
-        moves = {},
-      }
-      inline.render_inline_diff(bufnr, synth_diff, {}, lines)
-    end
+    return { changes = {}, moves = {} }
   end
+
+  local full_range = { start_line = 1, end_line = n + 1 }
+  local empty_range = { start_line = 1, end_line = 1 }
+  local synth_diff
+  if side == "original" then
+    synth_diff = {
+      changes = { { original = full_range, modified = empty_range, inner_changes = {} } },
+      moves = {},
+    }
+  else
+    synth_diff = {
+      changes = { { original = empty_range, modified = full_range, inner_changes = {} } },
+      moves = {},
+    }
+  end
+
+  local hl_group = side == "original" and "CodeDiffLineDelete" or "CodeDiffLineInsert"
+  local priority = config.options.diff.highlight_priority
+  for line_idx = 0, n - 1 do
+    pcall(vim.api.nvim_buf_set_extmark, bufnr, inline.ns_inline, line_idx, 0, {
+      end_line = line_idx + 1,
+      end_col = 0,
+      hl_group = hl_group,
+      hl_eol = true,
+      priority = priority,
+    })
+  end
+
   return synth_diff
 end
 
@@ -641,8 +657,11 @@ function M.show_single_file(tabpage, file_path, opts)
     local bufname = vim.api.nvim_buf_get_name(file_bufnr)
     local is_virtual = bufname:sub(1, #"codediff://") == "codediff://"
 
-    if is_virtual then
-      -- Content loads asynchronously via BufReadCmd → CodeDiffVirtualFileLoaded
+    if is_virtual and not vim.b[file_bufnr].codediff_virtual_loaded then
+      -- Content still loading asynchronously via BufReadCmd. Apply highlights
+      -- once it arrives (CodeDiffVirtualFileLoaded). A subsequent re-render that
+      -- runs after the load completes takes the immediate branch below, which
+      -- re-applies highlights cleared at the top of this function.
       local augroup = vim.api.nvim_create_augroup("CodeDiffInlineSingleFileHL_" .. tabpage, { clear = true })
       vim.api.nvim_create_autocmd("User", {
         group = augroup,
@@ -656,7 +675,8 @@ function M.show_single_file(tabpage, file_path, opts)
         end,
       })
     else
-      -- Real file: content already present, apply immediately
+      -- Real file, or virtual buffer whose content has already loaded:
+      -- content is present, apply immediately.
       local synth_diff = apply_whole_file_highlights_inline(file_bufnr, wf_side)
       lifecycle.update_diff_result(tabpage, synth_diff)
     end
