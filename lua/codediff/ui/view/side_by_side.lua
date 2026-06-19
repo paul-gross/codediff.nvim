@@ -121,12 +121,24 @@ function M.create(session_config, filetype, on_ready)
 
   -- Window options (scrollbind will be set by compute_and_render)
   -- Note: number and relativenumber are intentionally NOT set to honor user's local config
+  -- Capture user's original values BEFORE writing so preseed_win_opt can seed the
+  -- effects ledger correctly after create_session runs in the async render_everything.
   local win_opts = {
     cursorline = true,
     wrap = false,
     list = false,
   }
-
+  -- Capture scrollbind BEFORE any codediff write (including the async render that
+  -- calls establish_scrollbind). preseed_win_opt uses capture-once semantics, so
+  -- these values must be saved here — before create_session and before render.
+  local orig_user_scrollbind = vim.wo[original_win].scrollbind
+  local mod_user_scrollbind = vim.wo[modified_win].scrollbind
+  local orig_user_opts = {}
+  local mod_user_opts = {}
+  for opt, _ in pairs(win_opts) do
+    orig_user_opts[opt] = vim.wo[original_win][opt]
+    mod_user_opts[opt] = vim.wo[modified_win][opt]
+  end
   for opt, val in pairs(win_opts) do
     vim.wo[original_win][opt] = val
     vim.wo[modified_win][opt] = val
@@ -157,6 +169,18 @@ function M.create(session_config, filetype, on_ready)
         setup_all_keymaps(tabpage, ob, mb, is_explorer)
       end
     )
+    -- Pre-seed the effects ledger with user originals captured before the raw writes above
+    local sess = lifecycle.get_session(tabpage)
+    if sess then
+      for opt, codediff_val in pairs(win_opts) do
+        lifecycle.preseed_win_opt(sess, original_win, opt, orig_user_opts[opt], codediff_val)
+        lifecycle.preseed_win_opt(sess, modified_win, opt, mod_user_opts[opt], codediff_val)
+      end
+      -- Scrollbind: establish_scrollbind (called by compute_and_render) runs after
+      -- create_session, so preseed with the user's pre-diff value now.
+      lifecycle.preseed_win_opt(sess, original_win, "scrollbind", orig_user_scrollbind, vim.wo[original_win].scrollbind)
+      lifecycle.preseed_win_opt(sess, modified_win, "scrollbind", mod_user_scrollbind, vim.wo[modified_win].scrollbind)
+    end
   else
     -- Normal mode: Full rendering
     local original_is_virtual = is_virtual_revision(session_config.original_revision)
@@ -235,6 +259,19 @@ function M.create(session_config, filetype, on_ready)
                   conflict.setup_keymaps(tabpage)
                 end
               )
+              -- Pre-seed the effects ledger with user originals captured before the raw writes above
+              local sess = lifecycle.get_session(tabpage)
+              if sess then
+                for opt, codediff_val in pairs(win_opts) do
+                  lifecycle.preseed_win_opt(sess, original_win, opt, orig_user_opts[opt], codediff_val)
+                  lifecycle.preseed_win_opt(sess, modified_win, opt, mod_user_opts[opt], codediff_val)
+                end
+                -- Scrollbind: establish_scrollbind (called by compute_and_render_conflict)
+                -- runs before create_session with sess==nil, so the raw write has already
+                -- happened. Preseed now with the user's pre-diff values so restore works.
+                lifecycle.preseed_win_opt(sess, original_win, "scrollbind", orig_user_scrollbind, vim.wo[original_win].scrollbind)
+                lifecycle.preseed_win_opt(sess, modified_win, "scrollbind", mod_user_scrollbind, vim.wo[modified_win].scrollbind)
+              end
 
               -- Setup result window and keymaps
               local success = setup_conflict_result_window(tabpage, session_config, original_win, modified_win, base_lines, conflict_diffs, false)
@@ -290,6 +327,19 @@ function M.create(session_config, filetype, on_ready)
               setup_all_keymaps(tabpage, ob, mb, is_explorer)
             end
           )
+          -- Pre-seed the effects ledger with user originals captured before the raw writes above
+          local sess = lifecycle.get_session(tabpage)
+          if sess then
+            for opt, codediff_val in pairs(win_opts) do
+              lifecycle.preseed_win_opt(sess, original_win, opt, orig_user_opts[opt], codediff_val)
+              lifecycle.preseed_win_opt(sess, modified_win, opt, mod_user_opts[opt], codediff_val)
+            end
+            -- Scrollbind: establish_scrollbind (called by compute_and_render) runs
+            -- before create_session with sess==nil, so the raw write has already
+            -- happened. Preseed now with the user's pre-diff values so restore works.
+            lifecycle.preseed_win_opt(sess, original_win, "scrollbind", orig_user_scrollbind, vim.wo[original_win].scrollbind)
+            lifecycle.preseed_win_opt(sess, modified_win, "scrollbind", mod_user_scrollbind, vim.wo[modified_win].scrollbind)
+          end
           -- Enable auto-refresh for real file buffers only
           setup_auto_refresh(original_info.bufnr, modified_info.bufnr, original_is_virtual, modified_is_virtual)
 
@@ -413,6 +463,10 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
     return false
   end
 
+  -- Signal that a file-switch render is in progress so BufWinLeave hooks do not
+  -- prematurely detach the outgoing buffers (update_buffers handles that below).
+  session.updating = true
+
   -- Disable auto-refresh temporarily
   auto_refresh.disable(old_original_buf)
   auto_refresh.disable(old_modified_buf)
@@ -473,11 +527,20 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
   local render_everything = function()
     -- Guard: Check if windows are still valid
     if not vim.api.nvim_win_is_valid(original_win) or not vim.api.nvim_win_is_valid(modified_win) then
+      -- Clear updating flag so BufWinLeave hooks are not permanently suppressed.
+      local s = lifecycle.get_session(tabpage)
+      if s then
+        s.updating = false
+      end
       return
     end
 
     -- Guard: Check if buffers are still valid
     if not vim.api.nvim_buf_is_valid(original_info.bufnr) or not vim.api.nvim_buf_is_valid(modified_info.bufnr) then
+      local s = lifecycle.get_session(tabpage)
+      if s then
+        s.updating = false
+      end
       return
     end
 
@@ -516,6 +579,11 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
               conflict.setup_keymaps(tabpage)
             end
           end
+          -- Clear the updating flag now that update_buffers + setup_all_keymaps are done.
+          local s = lifecycle.get_session(tabpage)
+          if s then
+            s.updating = false
+          end
         end)
       end)
     else
@@ -548,6 +616,13 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
         if saved_current_win and vim.api.nvim_win_is_valid(saved_current_win) then
           vim.api.nvim_set_current_win(saved_current_win)
         end
+      end
+
+      -- Clear the updating flag now that update_buffers + setup_all_keymaps are done
+      -- (or if lines_diff was nil and no update was applied).
+      local s = lifecycle.get_session(tabpage)
+      if s then
+        s.updating = false
       end
     end
   end
@@ -733,6 +808,10 @@ local function show_single_file(tabpage, opts)
     return
   end
 
+  -- Guard BufWinLeave hooks: buffer-swap and window-close below will fire BufWinLeave;
+  -- update_buffers (called further down) handles the actual detach.
+  session.updating = true
+
   lifecycle.update_layout(tabpage, "side-by-side")
   local orig_win, mod_win = lifecycle.get_windows(tabpage)
   local highlights = require("codediff.ui.highlights")
@@ -801,6 +880,12 @@ local function show_single_file(tabpage, opts)
     local view_keymaps = require("codediff.ui.view.keymaps")
     view_keymaps.setup_all_keymaps(tabpage, orig_bufnr, mod_bufnr, session.mode == "explorer")
 
+    -- Clear the updating flag now that update_buffers + setup_all_keymaps are done.
+    local s = lifecycle.get_session(tabpage)
+    if s then
+      s.updating = false
+    end
+
     -- Apply whole-file highlights when the caller signals a fully deleted/added file.
     -- Untracked files (whole_file_side = nil) are left unhighlighted.
     if opts.whole_file_side then
@@ -833,6 +918,13 @@ local function show_single_file(tabpage, opts)
         lifecycle.update_diff_result(tabpage, synth_diff)
       end
     end
+  end
+
+  -- Guarantee updating is cleared even when keep_win was nil/invalid (the inner
+  -- clear at line ~877 only runs inside the keep_win valid branch).
+  local s_final = lifecycle.get_session(tabpage)
+  if s_final and s_final.updating then
+    s_final.updating = false
   end
 
   layout.arrange(tabpage)

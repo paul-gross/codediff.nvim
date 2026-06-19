@@ -343,6 +343,18 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
       return
     end
 
+    -- Belt-and-suspenders: for non-virtual buffers relocated into another tab via
+    -- nvim_win_set_buf, BufWinLeave fires and the scheduled detach handles cleanup.
+    -- Add an explicit detach here as well so the real buffer carries no codediff maps
+    -- even if the scheduled BufWinLeave handler races with tab-close.
+    if not is_virtual then
+      local sess = session
+      if sess then
+        local effects = require("codediff.ui.lifecycle.effects")
+        effects.detach_buffer(sess, current_buf)
+      end
+    end
+
     pcall(vim.api.nvim_win_set_cursor, target_win, cursor)
 
     -- Optionally close codediff after navigating to file
@@ -640,6 +652,7 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
 
   -- Hunk-level staging (S, U, D) - stage/unstage/discard individual hunks via git apply
   -- Only set on diff buffers, not explorer (S/U conflict with stage_all/unstage_all)
+  -- These are routed through the effects ledger so they are captured and restored on cleanup.
   local hunk_opts = { noremap = true, silent = true, nowait = true }
   local diff_bufs = {}
   if original_bufnr and vim.api.nvim_buf_is_valid(original_bufnr) then
@@ -648,15 +661,21 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
   if modified_bufnr and vim.api.nvim_buf_is_valid(modified_bufnr) then
     table.insert(diff_bufs, modified_bufnr)
   end
+  -- Route hunk maps through the effects ledger when a session is available.
+  -- Falls back to raw vim.keymap.set for safety when session is nil (should
+  -- not happen in normal operation, but guards against races during setup).
+  local eff = session and lifecycle.set_keymap or function(_, mode, lhs, rhs, opts)
+    vim.keymap.set(mode, lhs, rhs, opts)
+  end
   for _, bufnr in ipairs(diff_bufs) do
     if keymaps.stage_hunk then
-      vim.keymap.set("n", keymaps.stage_hunk, stage_hunk, vim.tbl_extend("force", hunk_opts, { buffer = bufnr, desc = "Stage hunk under cursor" }))
+      eff(session, "n", keymaps.stage_hunk, stage_hunk, vim.tbl_extend("force", hunk_opts, { buffer = bufnr, desc = "Stage hunk under cursor" }))
     end
     if keymaps.unstage_hunk then
-      vim.keymap.set("n", keymaps.unstage_hunk, unstage_hunk, vim.tbl_extend("force", hunk_opts, { buffer = bufnr, desc = "Unstage hunk under cursor" }))
+      eff(session, "n", keymaps.unstage_hunk, unstage_hunk, vim.tbl_extend("force", hunk_opts, { buffer = bufnr, desc = "Unstage hunk under cursor" }))
     end
     if keymaps.discard_hunk then
-      vim.keymap.set("n", keymaps.discard_hunk, discard_hunk, vim.tbl_extend("force", hunk_opts, { buffer = bufnr, desc = "Discard hunk under cursor" }))
+      eff(session, "n", keymaps.discard_hunk, discard_hunk, vim.tbl_extend("force", hunk_opts, { buffer = bufnr, desc = "Discard hunk under cursor" }))
     end
 
     -- Hunk textobject (ih) - select hunk lines in visual/operator-pending mode
@@ -680,7 +699,7 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
         vim.cmd("normal! " .. start_line .. "GV" .. (end_line - 1) .. "G")
       end
 
-      vim.keymap.set({ "o", "x" }, keymaps.hunk_textobject, select_hunk, vim.tbl_extend("force", hunk_opts, { buffer = bufnr, desc = "Hunk textobject" }))
+      eff(session, { "o", "x" }, keymaps.hunk_textobject, select_hunk, vim.tbl_extend("force", hunk_opts, { buffer = bufnr, desc = "Hunk textobject" }))
     end
   end
 
@@ -746,9 +765,10 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
     local saved_scrollbind_current = vim.wo[current_win].scrollbind
     local saved_scrollbind_other = vim.wo[other_win].scrollbind
 
-    -- Disable scrollbind
-    vim.wo[current_win].scrollbind = false
-    vim.wo[other_win].scrollbind = false
+    -- Disable scrollbind (transient; effects ledger capture-once preserves user's original)
+    local effects_m = require("codediff.ui.lifecycle.effects")
+    effects_m.set_win_opt(session, current_win, "scrollbind", false)
+    effects_m.set_win_opt(session, other_win, "scrollbind", false)
 
     -- Align using the annotation virt_line as anchor:
     -- Both sides have "⇄ moved" above their first moved line.

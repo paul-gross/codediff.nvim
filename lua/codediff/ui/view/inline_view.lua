@@ -52,21 +52,28 @@ local function compute_and_render_inline(
   end
 
   if modified_win and vim.api.nvim_win_is_valid(modified_win) then
-    vim.wo[modified_win].wrap = false
+    -- Route wrap through the effects ledger (session may be nil on first render before
+    -- create_session; preseed_win_opt in the caller seeds the ledger with user originals).
+    local lifecycle = require("codediff.ui.lifecycle")
+    local tabpage = vim.api.nvim_win_get_tabpage(modified_win)
+    local session = tabpage and lifecycle.get_session(tabpage) or nil
+    if session then
+      local effects = require("codediff.ui.lifecycle.effects")
+      effects.set_win_opt(session, modified_win, "wrap", false)
+    else
+      vim.wo[modified_win].wrap = false
+    end
     if auto_scroll_to_first_hunk and lines_diff.changes and #lines_diff.changes > 0 then
       -- Honor session.pending_cursor_landing (cycle-hunks-across-files
       -- backward direction sets it to "last"; see ui/view/navigation.lua).
       -- Look up the session via the window's tabpage because this code can
       -- run from a scheduled callback on a different tab.
-      local lifecycle = require("codediff.ui.lifecycle")
-      local tabpage = vim.api.nvim_win_get_tabpage(modified_win)
-      local session = tabpage and lifecycle.get_session(tabpage) or nil
       local landing = session and session.pending_cursor_landing
-      if session then session.pending_cursor_landing = nil end
+      if session then
+        session.pending_cursor_landing = nil
+      end
 
-      local target_line = landing == "last"
-        and lines_diff.changes[#lines_diff.changes].modified.start_line
-        or lines_diff.changes[1].modified.start_line
+      local target_line = landing == "last" and lines_diff.changes[#lines_diff.changes].modified.start_line or lines_diff.changes[1].modified.start_line
       pcall(vim.api.nvim_win_set_cursor, modified_win, { target_line, 0 })
       vim.api.nvim_set_current_win(modified_win)
       vim.cmd("normal! zz")
@@ -124,6 +131,9 @@ function M.create(session_config, filetype, on_ready)
       pcall(vim.api.nvim_buf_delete, initial_buf, { force = true })
     end
 
+    -- Capture user originals before writing (for effects ledger pre-seed)
+    local il_user_cursorline = vim.wo[modified_win].cursorline
+    local il_user_wrap = vim.wo[modified_win].wrap
     vim.wo[modified_win].cursorline = true
     vim.wo[modified_win].wrap = false
 
@@ -147,6 +157,12 @@ function M.create(session_config, filetype, on_ready)
         end
       end
     )
+    -- Pre-seed the effects ledger with user originals captured before the raw writes
+    local il_sess = lifecycle.get_session(tabpage)
+    if il_sess then
+      lifecycle.preseed_win_opt(il_sess, modified_win, "cursorline", il_user_cursorline, true)
+      lifecycle.preseed_win_opt(il_sess, modified_win, "wrap", il_user_wrap, false)
+    end
 
     mark_inline(tabpage)
     -- Setup panels via shared module
@@ -200,6 +216,9 @@ function M.create(session_config, filetype, on_ready)
     pcall(vim.api.nvim_buf_delete, initial_buf, { force = true })
   end
 
+  -- Capture user originals before writing (for effects ledger pre-seed after create_session)
+  local il2_user_cursorline = vim.wo[modified_win].cursorline
+  local il2_user_wrap = vim.wo[modified_win].wrap
   vim.wo[modified_win].cursorline = true
   vim.wo[modified_win].wrap = false
 
@@ -246,6 +265,12 @@ function M.create(session_config, filetype, on_ready)
           end
         end
       )
+      -- Pre-seed the effects ledger with user originals captured before the raw writes
+      local il2_sess = lifecycle.get_session(tabpage)
+      if il2_sess then
+        lifecycle.preseed_win_opt(il2_sess, modified_win, "cursorline", il2_user_cursorline, true)
+        lifecycle.preseed_win_opt(il2_sess, modified_win, "wrap", il2_user_wrap, false)
+      end
 
       mark_inline(tabpage)
 
@@ -347,6 +372,10 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
     return false
   end
 
+  -- Signal that a file-switch render is in progress so BufWinLeave hooks do not
+  -- prematurely detach the outgoing buffers (update_buffers handles that below).
+  session.updating = true
+
   -- Disable auto-refresh and clear old highlights from ALL namespaces.
   -- ns_highlight/ns_filler may linger after toggling from side-by-side.
   if old_modified_buf and vim.api.nvim_buf_is_valid(old_modified_buf) then
@@ -395,9 +424,17 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
 
   local render_everything = function()
     if not vim.api.nvim_win_is_valid(modified_win) then
+      local s = lifecycle.get_session(tabpage)
+      if s then
+        s.updating = false
+      end
       return
     end
     if not vim.api.nvim_buf_is_valid(orig_buf) or not vim.api.nvim_buf_is_valid(mod_buf) then
+      local s = lifecycle.get_session(tabpage)
+      if s then
+        s.updating = false
+      end
       return
     end
 
@@ -424,6 +461,13 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
         vim.api.nvim_set_current_win(saved_current_win)
       end
     end
+
+    -- Clear the updating flag now that update_buffers + setup_keymaps are done
+    -- (or if lines_diff was nil and no update was applied).
+    local s = lifecycle.get_session(tabpage)
+    if s then
+      s.updating = false
+    end
   end
 
   -- Async loading with pending counter
@@ -440,6 +484,10 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
     git.get_file_content(session_config.original_revision, session_config.git_root, session_config.original_path or session_config.modified_path, function(err, lines)
       vim.schedule(function()
         if not vim.api.nvim_buf_is_valid(orig_buf) then
+          -- Buffer was wiped before the callback arrived; still mark done so
+          -- render_everything fires (its own validity guard will clear updating).
+          pending.original = false
+          check_ready()
           return
         end
         if err then
@@ -469,6 +517,10 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
     git.get_file_content(session_config.modified_revision, session_config.git_root, session_config.modified_path, function(err, lines)
       vim.schedule(function()
         if not vim.api.nvim_buf_is_valid(mod_buf) then
+          -- Buffer was wiped before the callback arrived; still mark done so
+          -- render_everything fires (its own validity guard will clear updating).
+          pending.modified = false
+          check_ready()
           return
         end
         if err then

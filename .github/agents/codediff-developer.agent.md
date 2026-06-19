@@ -131,3 +131,13 @@ e2e.exec("CodeDiff HEAD~1")
 - Always use the test init: `nvim --headless -u tests/init.lua`
 - Create scenario files in `/tmp/`, never in the repo
 - Clean up temp repos in the cleanup phase
+
+## Architectural Rule: Effects Ledger
+
+**All buffer-local keymaps and diff-owned window options on diff session buffers/windows MUST go through `effects.set_keymap` / `effects.set_win_opt` — never raw `vim.keymap.set` / `vim.wo`.**
+
+The effects ledger (`lua/codediff/ui/lifecycle/effects.lua`) captures the prior state before each write so it can be restored on session close. Bypassing it causes permanent leaks (scrollbind accumulation, dead/clobbered user keymaps).
+
+See `docs/development/05-architecture/effects-ledger.md` for the full data model, API, lifecycle integration, owned window options table, and the "Deliberately out of scope" carve-outs (compact.lua fold keymaps, explorer nav keymaps, float keymaps, winbar). Only those documented sites may use raw writes; any new bypass must be added to the out-of-scope table with a justification.
+
+This rule is enforced by `tests/ui/lifecycle/bypass_audit_spec.lua`, which maintains an explicit allowlist of approved raw-write sites and fails if an unlisted site appears.

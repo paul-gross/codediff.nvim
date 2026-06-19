@@ -159,15 +159,24 @@ local function do_diff_update(bufnr, skip_watcher_check)
         end
 
         -- Step 3: Re-establish scrollbind (reset sync state)
-        vim.wo[original_win].scrollbind = false
-        vim.wo[modified_win].scrollbind = false
-        if result_win then
-          vim.wo[result_win].scrollbind = false
+        local sess = lifecycle.get_session(tabpage)
+        local effects = require("codediff.ui.lifecycle.effects")
+        local function sw(win, opt, val)
+          if sess then
+            effects.set_win_opt(sess, win, opt, val)
+          else
+            vim.wo[win][opt] = val
+          end
         end
-        vim.wo[original_win].scrollbind = true
-        vim.wo[modified_win].scrollbind = true
+        sw(original_win, "scrollbind", false)
+        sw(modified_win, "scrollbind", false)
         if result_win then
-          vim.wo[result_win].scrollbind = true
+          sw(result_win, "scrollbind", false)
+        end
+        sw(original_win, "scrollbind", true)
+        sw(modified_win, "scrollbind", true)
+        if result_win then
+          sw(result_win, "scrollbind", true)
         end
 
         -- Step 4: Restore full view state for all windows

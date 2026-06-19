@@ -9,10 +9,7 @@ local config = require("codediff.config")
 local WIDTH_TOLERANCE = 2
 
 local function assert_width_near(expected, actual, msg)
-  assert.is_true(
-    math.abs(expected - actual) <= WIDTH_TOLERANCE,
-    (msg or "") .. " expected ~" .. expected .. " got " .. actual
-  )
+  assert.is_true(math.abs(expected - actual) <= WIDTH_TOLERANCE, (msg or "") .. " expected ~" .. expected .. " got " .. actual)
 end
 
 -- Create a mock session in lifecycle so layout.arrange() can read it
@@ -28,6 +25,7 @@ local function create_mock_session(tabpage, opts)
     explorer = opts.panel,
     original_bufnr = opts.original_bufnr,
     modified_bufnr = opts.modified_bufnr,
+    effects = { keymaps = {}, win_opts = {} },
   }
 end
 
@@ -474,10 +472,7 @@ describe("Layout Manager", function()
     assert.are.equal(panel_width, panel_w, "Panel width should be preserved")
     -- With 1:2:1 ratio, result should be ~2x the side panes
     assert_width_near(orig_w, mod_w, "Side panes should be equal (1:_:1):")
-    assert.is_true(
-      result_w >= orig_w * 1.5,
-      "Result should be ~2x side panes (1:2:1): result=" .. result_w .. " side=" .. orig_w
-    )
+    assert.is_true(result_w >= orig_w * 1.5, "Result should be ~2x side panes (1:2:1): result=" .. result_w .. " side=" .. orig_w)
 
     cleanup_mock_session(tabpage)
   end)
@@ -909,6 +904,7 @@ describe("Layout Manager", function()
       original_state = state.save_buffer_state(orig_buf),
       modified_state = state.save_buffer_state(mod_buf),
       suspended = false,
+      effects = { keymaps = {}, win_opts = {} },
     }
     vim.w[orig_win].codediff_restore = 1
     vim.w[mod_win].codediff_restore = 1
@@ -916,7 +912,7 @@ describe("Layout Manager", function()
     -- Write a temp file to load (use OS-appropriate temp dir)
     local tmp_dir = vim.fn.has("win32") == 1 and (vim.fn.getenv("TEMP") or "C:\\Windows\\Temp") or "/tmp"
     local tmp_file = tmp_dir .. "/test_untracked_layout.txt"
-    vim.fn.writefile({"content"}, tmp_file)
+    vim.fn.writefile({ "content" }, tmp_file)
 
     local side_by_side = require("codediff.ui.view.side_by_side")
     side_by_side.show_untracked_file(tabpage, tmp_file)
@@ -987,6 +983,7 @@ describe("Layout Manager", function()
       original_state = state.save_buffer_state(orig_buf),
       modified_state = state.save_buffer_state(mod_buf),
       suspended = false,
+      effects = { keymaps = {}, win_opts = {} },
     }
     vim.w[orig_win].codediff_restore = 1
     vim.w[mod_win].codediff_restore = 1
@@ -1053,6 +1050,7 @@ describe("Layout Manager", function()
       original_state = state.save_buffer_state(orig_buf),
       modified_state = state.save_buffer_state(mod_buf),
       suspended = false,
+      effects = { keymaps = {}, win_opts = {} },
     }
     vim.w[orig_win].codediff_restore = 1
     vim.w[mod_win].codediff_restore = 1
@@ -1124,6 +1122,7 @@ describe("Layout Manager", function()
       original_state = state.save_buffer_state(orig_buf),
       modified_state = state.save_buffer_state(mod_buf),
       suspended = false,
+      effects = { keymaps = {}, win_opts = {} },
     }
     vim.w[orig_win].codediff_restore = 1
     vim.w[mod_win].codediff_restore = 1
@@ -1166,8 +1165,8 @@ describe("Layout Manager", function()
     local mod_buf = vim.api.nvim_get_current_buf()
 
     -- Both buffers have empty content (simulating empty files)
-    vim.api.nvim_buf_set_lines(orig_buf, 0, -1, false, {""})
-    vim.api.nvim_buf_set_lines(mod_buf, 0, -1, false, {""})
+    vim.api.nvim_buf_set_lines(orig_buf, 0, -1, false, { "" })
+    vim.api.nvim_buf_set_lines(mod_buf, 0, -1, false, { "" })
 
     create_mock_session(tabpage, {
       original_win = orig_win,
@@ -1209,10 +1208,7 @@ describe("Layout Manager", function()
     local session_mod = require("codediff.ui.lifecycle.session")
     config.options.explorer = config.options.explorer or {}
     config.options.explorer.width = panel_width
-    session_mod.create_session(
-      tabpage, "explorer", "/tmp", "", "", nil, nil,
-      orig_buf, mod_buf, orig_win, mod_win, {}, nil
-    )
+    session_mod.create_session(tabpage, "explorer", "/tmp", "", "", nil, nil, orig_buf, mod_buf, orig_win, mod_win, {}, nil)
     local accessors = require("codediff.ui.lifecycle.accessors")
     accessors.set_explorer(tabpage, panel)
 

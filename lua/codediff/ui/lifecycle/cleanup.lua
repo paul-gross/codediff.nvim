@@ -49,6 +49,11 @@ local function cleanup_diff(tabpage)
   -- Remove tab-scoped keymaps from all tracked buffers
   accessors.clear_tab_keymaps(tabpage)
 
+  -- Restore diff-owned window options (scrollbind, wrap, cursorline, list) via effects ledger.
+  -- restore_window checks validity and epoch before writing, so closed windows are skipped.
+  local effects = require("codediff.ui.lifecycle.effects")
+  effects.restore_window_opts(diff)
+
   -- Call explorer's cleanup function to stop file watchers
   if diff.explorer and diff.explorer._cleanup_auto_refresh then
     pcall(diff.explorer._cleanup_auto_refresh)

@@ -7,6 +7,11 @@ local virtual_file = require("codediff.core.virtual_file")
 local accessors = require("codediff.ui.lifecycle.accessors")
 local welcome_window = require("codediff.ui.view.welcome_window")
 
+-- Monotonic counter for effects epochs; incremented once per create_session call.
+-- Each session gets a unique epoch used to guard against winid recycle in the
+-- window-option ledger.
+local _effects_epoch_counter = 0
+
 -- Track active diff sessions
 -- Structure: {
 --   tabpage_id = {
@@ -51,6 +56,80 @@ end
 -- Expose compute_virtual_uri for other modules
 M.compute_virtual_uri = compute_virtual_uri
 
+-- ============================================================================
+-- BufWinLeave hook registration (Phase 5)
+-- Defined before create_session so it can be called from within that function.
+-- ============================================================================
+
+--- Register a BufWinLeave autocmd on a single diff buffer.
+--- When the buffer genuinely leaves the diff surface (not mid-update, not just
+--- a focus change between the two panes), the effects ledger restores that
+--- buffer's keymaps.
+---
+--- Guards applied (in order):
+---   1. active_diffs[tabpage] must exist (no-op after full cleanup avoids double-restore).
+---   2. sess.updating must be false (skip if a file-switch render is in progress;
+---      update_buffers handles the detach after the new bufnrs are in place).
+---   3. vim.schedule post-event check: if the buffer is still displayed in one of the
+---      session's diff windows after the leave event (e.g. layout reshuffle or
+---      inter-pane <C-w>w focus change), it did not actually leave. Only detach when
+---      the buffer is truly gone from all tracked diff windows.
+---
+---@param tabpage number  tabpage this session belongs to
+---@param bufnr number    the diff buffer to watch
+---@param tab_augroup number  the per-tab augroup created by create_session
+function M.register_buf_win_leave(tabpage, bufnr, tab_augroup)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+
+  vim.api.nvim_create_autocmd("BufWinLeave", {
+    group = tab_augroup,
+    buffer = bufnr,
+    callback = function()
+      -- Guard 1: session still alive
+      local sess = active_diffs[tabpage]
+      if not sess then
+        return
+      end
+
+      -- Guard 2: mid-render/file-switch in progress; update_buffers will handle detach
+      if sess.updating then
+        return
+      end
+
+      -- Guard 3: schedule a post-event check to see if the buffer is still visible
+      -- in one of the session's diff windows (inter-pane <C-w>w or layout reshuffle).
+      local leaving_buf = bufnr
+      vim.schedule(function()
+        local s = active_diffs[tabpage]
+        if not s then
+          return
+        end
+
+        -- If the buffer is still displayed in any diff window, it did not truly leave.
+        local diff_wins = {
+          s.original_win,
+          s.modified_win,
+          s.result_win,
+        }
+        for _, win in ipairs(diff_wins) do
+          if win and vim.api.nvim_win_is_valid(win) then
+            if vim.api.nvim_win_get_buf(win) == leaving_buf then
+              -- Still visible in a diff window → not a real leave; do nothing.
+              return
+            end
+          end
+        end
+
+        -- Truly left: restore this buffer's keymaps via the effects ledger.
+        local effects = require("codediff.ui.lifecycle.effects")
+        effects.detach_buffer(s, leaving_buf)
+      end)
+    end,
+  })
+end
+
 function M.create_session(
   tabpage,
   mode,
@@ -70,6 +149,10 @@ function M.create_session(
   -- Save buffer states
   local original_state = state.save_buffer_state(original_bufnr)
   local modified_state = state.save_buffer_state(modified_bufnr)
+
+  -- Assign a unique epoch for the effects ledger (guards winid recycle)
+  _effects_epoch_counter = _effects_epoch_counter + 1
+  local session_epoch = _effects_epoch_counter
 
   -- Create complete session in one step
   active_diffs[tabpage] = {
@@ -110,6 +193,15 @@ function M.create_session(
     result_win = nil,
     conflict_files = {}, -- Tracks files opened in conflict mode for unsaved warning
     reapply_keymaps = reapply_keymaps,
+
+    -- Effects ledger: captures prior state before codediff sets keymaps / window options.
+    -- Populated by effects.lua; dormant until later phases route their writes here.
+    effects = { keymaps = {}, win_opts = {} },
+    effects_epoch = session_epoch,
+
+    -- Guard flag: true while update_buffers + setup_all_keymaps are in progress.
+    -- Prevents BufWinLeave from prematurely detaching buffers mid-render.
+    updating = false,
   }
 
   welcome_window.capture_session_profiles(active_diffs[tabpage])
@@ -170,7 +262,8 @@ function M.create_session(
       if win == sess.original_win or win == sess.modified_win then
         sync_window_ui(sess, win)
         -- Re-apply critical window options that might get reset by ftplugins/autocmds
-        vim.wo[win].wrap = false
+        local effects = require("codediff.ui.lifecycle.effects")
+        effects.set_win_opt(sess, win, "wrap", false)
         welcome_window.sync(win)
       end
     end,
@@ -202,6 +295,17 @@ function M.create_session(
       end)
     end,
   })
+
+  -- Register BufWinLeave hooks on the initial diff buffers.
+  -- On file-switch, accessors.update_buffers calls M.register_buf_win_leave for
+  -- newly added buffers (using sess._tab_augroup to reach the per-tab augroup).
+  M.register_buf_win_leave(tabpage, original_bufnr, tab_augroup)
+  if modified_bufnr ~= original_bufnr then
+    M.register_buf_win_leave(tabpage, modified_bufnr, tab_augroup)
+  end
+
+  -- Store the tab_augroup so update_buffers can register hooks on new buffers.
+  active_diffs[tabpage]._tab_augroup = tab_augroup
 end
 
 return M

@@ -41,6 +41,7 @@ Read everything in order to understand the complete development journey:
 5. [05-architecture/auto-refresh-strategy.md](05-architecture/auto-refresh-strategy.md) — How VSCode refreshes diffs
 6. [05-architecture/async-diff-architecture.md](05-architecture/async-diff-architecture.md) — Non-blocking diff computation
 7. [05-architecture/architecture-refactor-plan.md](05-architecture/architecture-refactor-plan.md) — Module reorganization plan
+8. [05-architecture/effects-ledger.md](05-architecture/effects-ledger.md) — Reversible effects ledger (keymaps + window opts), fixing scrollbind/keymap leaks
 
 ### 🔴 "I want to build or deploy"
 

@@ -2,9 +2,18 @@
 local M = {}
 local config = require("codediff.config")
 
+-- Eager require: effects.lua has no circular dependencies; loading it up front
+-- avoids a lazy-require failure when TabLeave fires after a `cd` changes CWD.
+local effects_ledger = require("codediff.ui.lifecycle.effects")
+
 -- Lazy require to avoid circular dependency: init → session → accessors → session
 local function get_active_diffs()
   return require("codediff.ui.lifecycle.session").get_active_diffs()
+end
+
+-- Compatibility shim: keep the local name used by existing call sites below.
+local function get_effects()
+  return effects_ledger
 end
 
 -- Check if a revision represents a virtual buffer
@@ -282,11 +291,33 @@ end
 
 --- Update buffer numbers (for file switching/sync when buffers change)
 --- Also updates buffer states (for suspend/resume to work correctly)
+---
+--- Phase 5: before re-pointing sess.original_bufnr/modified_bufnr, detach any
+--- bufnrs that are genuinely leaving the session (not reused as either new bufnr).
+--- This restores their user-visible keymaps immediately and drops their ledger entries.
+--- After re-pointing, register BufWinLeave hooks on any newly added bufnrs.
 function M.update_buffers(tabpage, original_bufnr, modified_bufnr)
   local active_diffs = get_active_diffs()
   local sess = active_diffs[tabpage]
   if not sess then
     return false
+  end
+
+  -- Collect bufnrs that are genuinely leaving (not equal to either new bufnr).
+  local new_bufnrs = { [original_bufnr] = true, [modified_bufnr] = true }
+  local outgoing = {}
+  if sess.original_bufnr and not new_bufnrs[sess.original_bufnr] then
+    table.insert(outgoing, sess.original_bufnr)
+  end
+  if sess.modified_bufnr and sess.modified_bufnr ~= sess.original_bufnr and not new_bufnrs[sess.modified_bufnr] then
+    table.insert(outgoing, sess.modified_bufnr)
+  end
+
+  -- Detach outgoing buffers: restore their keymaps and drop ledger entries.
+  -- Window options are NOT touched here (win opts are keyed by winid, not bufnr;
+  -- the windows themselves stay alive for the new buffers).
+  for _, old_buf in ipairs(outgoing) do
+    effects_ledger.detach_buffer(sess, old_buf)
   end
 
   local state = require("codediff.ui.lifecycle.state")
@@ -297,6 +328,21 @@ function M.update_buffers(tabpage, original_bufnr, modified_bufnr)
   -- Save buffer states for new buffers (critical for suspend/resume!)
   sess.original_state = state.save_buffer_state(original_bufnr)
   sess.modified_state = state.save_buffer_state(modified_bufnr)
+
+  -- Register BufWinLeave hooks on newly added bufnrs (not already tracked by a hook).
+  -- The session stores its tab_augroup so we can register buffer-local autocmds.
+  local session_mod = require("codediff.ui.lifecycle.session")
+  local augroup = sess._tab_augroup
+  if augroup then
+    -- Register for each new bufnr if not already in outgoing set (already-tracked ones
+    -- had their hook registered when first encountered; new bufnrs need fresh hooks).
+    -- It's safe to re-register: duplicate BufWinLeave hooks are harmless since the
+    -- guard in the callback checks active_diffs[tabpage] and sess.updating.
+    session_mod.register_buf_win_leave(tabpage, original_bufnr, augroup)
+    if modified_bufnr ~= original_bufnr then
+      session_mod.register_buf_win_leave(tabpage, modified_bufnr, augroup)
+    end
+  end
 
   return true
 end
@@ -352,6 +398,17 @@ function M.set_result(tabpage, result_bufnr, result_win)
   -- Mark result window with restore flag
   if result_win and vim.api.nvim_win_is_valid(result_win) then
     vim.w[result_win].codediff_restore = 1
+  end
+
+  -- Register BufWinLeave for the result buffer so that if only the result
+  -- window is closed, the effects ledger restores its keymaps (mirrors the
+  -- registration done for original_bufnr/modified_bufnr in session.lua).
+  if result_bufnr then
+    local session_mod = require("codediff.ui.lifecycle.session")
+    local augroup = sess._tab_augroup
+    if augroup then
+      session_mod.register_buf_win_leave(tabpage, result_bufnr, augroup)
+    end
   end
 
   return true
@@ -448,7 +505,9 @@ function M.confirm_close_with_unsaved(tabpage)
 end
 
 --- Set a keymap on all buffers in the diff tab (both diff buffers + explorer + result)
---- This is the unified API for setting tab-wide keymaps
+--- This is the unified API for setting tab-wide keymaps.
+--- Each vim.keymap.set call is routed through the effects ledger so the prior
+--- mapping is captured before being overwritten and can be restored on cleanup.
 --- @param tabpage number Tab page ID
 --- @param mode string Keymap mode ('n', 'v', etc.)
 --- @param lhs string Left-hand side of the keymap
@@ -462,37 +521,37 @@ function M.set_tab_keymap(tabpage, mode, lhs, rhs, opts)
     return false
   end
 
-  -- Track all buffers that have keymaps set (for cleanup on close)
-  sess.keymap_buffers = sess.keymap_buffers or {}
-
+  local effects = get_effects()
   opts = opts or {}
   local base_opts = { noremap = true, silent = true, nowait = true }
 
-  if vim.api.nvim_buf_is_valid(sess.original_bufnr) then
-    vim.keymap.set(mode, lhs, rhs, vim.tbl_extend("force", base_opts, opts, { buffer = sess.original_bufnr }))
-    sess.keymap_buffers[sess.original_bufnr] = true
+  local function set_on(bufnr)
+    if vim.api.nvim_buf_is_valid(bufnr) then
+      local merged = vim.tbl_extend("force", base_opts, opts, { buffer = bufnr })
+      effects.set_keymap(sess, mode, lhs, rhs, merged)
+    end
   end
 
-  if vim.api.nvim_buf_is_valid(sess.modified_bufnr) then
-    vim.keymap.set(mode, lhs, rhs, vim.tbl_extend("force", base_opts, opts, { buffer = sess.modified_bufnr }))
-    sess.keymap_buffers[sess.modified_bufnr] = true
-  end
+  set_on(sess.original_bufnr)
+  set_on(sess.modified_bufnr)
 
   local explorer = sess.explorer
-  if explorer and explorer.bufnr and vim.api.nvim_buf_is_valid(explorer.bufnr) then
-    vim.keymap.set(mode, lhs, rhs, vim.tbl_extend("force", base_opts, opts, { buffer = explorer.bufnr }))
-    sess.keymap_buffers[explorer.bufnr] = true
+  if explorer and explorer.bufnr then
+    set_on(explorer.bufnr)
   end
 
-  if sess.result_bufnr and vim.api.nvim_buf_is_valid(sess.result_bufnr) then
-    vim.keymap.set(mode, lhs, rhs, vim.tbl_extend("force", base_opts, opts, { buffer = sess.result_bufnr }))
-    sess.keymap_buffers[sess.result_bufnr] = true
+  if sess.result_bufnr then
+    set_on(sess.result_bufnr)
   end
 
   return true
 end
 
---- Remove codediff keymaps from a session's buffers
+--- Remove codediff keymaps from a session's buffers.
+--- Uses the effects ledger to restore each buffer to its pre-codediff state
+--- (mapset for prior maps, keymap.del for maps with no prior).
+--- After this call the ledger entries are dropped so a subsequent
+--- reapply_keymaps / set_tab_keymap captures cleanly again.
 function M.clear_tab_keymaps(tabpage)
   local active_diffs = get_active_diffs()
   local sess = active_diffs[tabpage]
@@ -500,25 +559,7 @@ function M.clear_tab_keymaps(tabpage)
     return
   end
 
-  local function del_buf_keymaps(bufnr, keys)
-    if not vim.api.nvim_buf_is_valid(bufnr) then
-      return
-    end
-    for _, key in pairs(keys) do
-      if key then
-        pcall(vim.keymap.del, "n", key, { buffer = bufnr })
-      end
-    end
-  end
-
-  -- Delete keymaps from ALL buffers that ever had them set (not just current ones)
-  if sess.keymap_buffers then
-    for bufnr, _ in pairs(sess.keymap_buffers) do
-      del_buf_keymaps(bufnr, config.options.keymaps.view)
-    end
-  end
-
-  sess.keymap_buffers = nil
+  get_effects().restore_keymaps(sess)
 end
 
 --- Setup auto-sync on file switch: automatically update diff when user edits a different file in working buffer

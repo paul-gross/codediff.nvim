@@ -211,22 +211,23 @@ local function resume_diff(tabpage)
         end
 
         -- Step 3: Re-establish scrollbind (reset sync state)
-        vim.wo[diff.original_win].scrollbind = false
-        vim.wo[diff.modified_win].scrollbind = false
+        local effects = require("codediff.ui.lifecycle.effects")
+        effects.set_win_opt(diff, diff.original_win, "scrollbind", false)
+        effects.set_win_opt(diff, diff.modified_win, "scrollbind", false)
         if result_win then
-          vim.wo[result_win].scrollbind = false
+          effects.set_win_opt(diff, result_win, "scrollbind", false)
         end
-        vim.wo[diff.original_win].scrollbind = true
-        vim.wo[diff.modified_win].scrollbind = true
+        effects.set_win_opt(diff, diff.original_win, "scrollbind", true)
+        effects.set_win_opt(diff, diff.modified_win, "scrollbind", true)
         if result_win then
-          vim.wo[result_win].scrollbind = true
+          effects.set_win_opt(diff, result_win, "scrollbind", true)
         end
 
         -- Re-apply critical window options that might have been reset
-        vim.wo[diff.original_win].wrap = false
-        vim.wo[diff.modified_win].wrap = false
+        effects.set_win_opt(diff, diff.original_win, "wrap", false)
+        effects.set_win_opt(diff, diff.modified_win, "wrap", false)
         if result_win then
-          vim.wo[result_win].wrap = false
+          effects.set_win_opt(diff, result_win, "wrap", false)
         end
 
         -- Step 4: Restore cursor position with both line and column

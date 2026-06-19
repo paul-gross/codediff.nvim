@@ -6,19 +6,34 @@ local M = {}
 
 -- Setup keymaps for history panel
 -- @param history: history object with tree, split, on_file_select, etc.
--- @param opts: { is_single_file_mode, file_path, git_root, load_commit_files, navigate_next, navigate_prev }
+-- @param opts: { is_single_file_mode, file_path, git_root, tabpage, load_commit_files, navigate_next, navigate_prev }
 function M.setup(history, opts)
   local tree = history.tree
   local split = history.split
   local is_single_file_mode = opts.is_single_file_mode
   local load_commit_files = opts.load_commit_files
 
+  local lifecycle = require("codediff.ui.lifecycle")
+  local session = opts.tabpage and lifecycle.get_session(opts.tabpage) or nil
+
   local map_options = { noremap = true, silent = true, nowait = true }
   local history_keymaps = config.options.keymaps.history or {}
 
+  -- Helper: route a buffer-local keymap through the effects ledger when a session
+  -- is available; fall back to a direct vim.keymap.set otherwise.
+  local function set_keymap(mode, lhs, rhs, extra_opts)
+    local resolved_opts = vim.tbl_extend("force", map_options, extra_opts or {}, { buffer = split.bufnr })
+    if session then
+      local effects = require("codediff.ui.lifecycle.effects")
+      effects.set_keymap(session, mode, lhs, rhs, resolved_opts)
+    else
+      vim.keymap.set(mode, lhs, rhs, resolved_opts)
+    end
+  end
+
   -- Toggle expand/collapse or select file
   if history_keymaps.select then
-    vim.keymap.set("n", history_keymaps.select, function()
+    set_keymap("n", history_keymaps.select, function()
       local node = tree:get_node()
       if not node then
         return
@@ -50,11 +65,11 @@ function M.setup(history, opts)
       elseif node.data and node.data.type == "file" then
         history.on_file_select(node.data)
       end
-    end, vim.tbl_extend("force", map_options, { buffer = split.bufnr, desc = "Select/toggle entry" }))
+    end, { desc = "Select/toggle entry" })
   end
 
   -- Double-click support
-  vim.keymap.set("n", "<2-LeftMouse>", function()
+  set_keymap("n", "<2-LeftMouse>", function()
     local node = tree:get_node()
     if not node then
       return
@@ -84,14 +99,14 @@ function M.setup(history, opts)
         load_commit_files(node)
       end
     end
-  end, vim.tbl_extend("force", map_options, { buffer = split.bufnr, desc = "Select file" }))
+  end, { desc = "Select file" })
 
   -- Note: next_file/prev_file keymaps are set via view/keymaps.lua:setup_all_keymaps()
   -- which uses set_tab_keymap to set them on all buffers including history panel
 
   -- Toggle view mode between list and tree
   if history_keymaps.toggle_view_mode then
-    vim.keymap.set("n", history_keymaps.toggle_view_mode, function()
+    set_keymap("n", history_keymaps.toggle_view_mode, function()
       local history_config = config.options.history or {}
       local current_mode = history_config.view_mode or "list"
       local new_mode = (current_mode == "list") and "tree" or "list"
@@ -111,15 +126,15 @@ function M.setup(history, opts)
       end
 
       vim.notify("History view: " .. new_mode, vim.log.levels.INFO)
-    end, vim.tbl_extend("force", map_options, { buffer = split.bufnr, desc = "Toggle list/tree view" }))
+    end, { desc = "Toggle list/tree view" })
   end
 
   -- Refresh (R key) - re-fetch commits
   if history_keymaps.refresh then
-    vim.keymap.set("n", history_keymaps.refresh, function()
+    set_keymap("n", history_keymaps.refresh, function()
       local refresh_module = require("codediff.ui.history.refresh")
       refresh_module.refresh(history)
-    end, vim.tbl_extend("force", map_options, { buffer = split.bufnr, desc = "Refresh history" }))
+    end, { desc = "Refresh history" })
   end
 
   -- Fold keymaps (Vim-style: zo/zO/zc/zC/za/zA/zR/zM — directory nodes only)
@@ -127,6 +142,7 @@ function M.setup(history, opts)
     tree = tree,
     keymaps = history_keymaps,
     bufnr = split.bufnr,
+    session = session,
   })
 end
 

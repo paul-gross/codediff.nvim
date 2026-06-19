@@ -14,6 +14,13 @@ local state = require("codediff.ui.lifecycle.state")
 local cleanup = require("codediff.ui.lifecycle.cleanup")
 local accessors = require("codediff.ui.lifecycle.accessors")
 
+-- Eager require: effects.lua has no circular dependencies; loading up front avoids
+-- lazy-require failures when autocmds fire after a `cd` changes CWD.
+local _effects = require("codediff.ui.lifecycle.effects")
+local function effects()
+  return _effects
+end
+
 -- Delegate to state module
 M.clear_highlights = state.clear_buffer_highlights
 
@@ -67,5 +74,37 @@ M.confirm_close_with_unsaved = accessors.confirm_close_with_unsaved
 M.set_tab_keymap = accessors.set_tab_keymap
 M.clear_tab_keymaps = accessors.clear_tab_keymaps
 M.setup_auto_sync_on_file_switch = accessors.setup_auto_sync_on_file_switch
+
+-- Delegate to effects module (lazy-required to avoid circular deps)
+M.set_keymap = function(...)
+  return effects().set_keymap(...)
+end
+M.set_win_opt = function(...)
+  return effects().set_win_opt(...)
+end
+M.preseed_win_opt = function(...)
+  return effects().preseed_win_opt(...)
+end
+M.restore_buffer = function(...)
+  return effects().restore_buffer(...)
+end
+M.restore_window = function(...)
+  return effects().restore_window(...)
+end
+M.restore_keymaps = function(...)
+  return effects().restore_keymaps(...)
+end
+M.restore_window_opts = function(...)
+  return effects().restore_window_opts(...)
+end
+M.restore_all = function(...)
+  return effects().restore_all(...)
+end
+M.detach_buffer = function(...)
+  return effects().detach_buffer(...)
+end
+M.describe = function(...)
+  return effects().describe(...)
+end
 
 return M

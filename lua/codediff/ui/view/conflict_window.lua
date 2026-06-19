@@ -105,13 +105,24 @@ function M.setup_conflict_result_window(tabpage, session_config, original_win, m
   vim.api.nvim_buf_set_lines(result_bufnr, 0, -1, false, result_lines)
   vim.bo[result_bufnr].modified = true
 
-  -- Set window options for result
-  vim.wo[result_win].wrap = false
-  vim.wo[result_win].cursorline = true
+  -- Set window options for result (route through effects ledger)
+  local sess = lifecycle.get_session(tabpage)
+  local effects = require("codediff.ui.lifecycle.effects")
+  if sess then
+    effects.set_win_opt(sess, result_win, "wrap", false)
+    effects.set_win_opt(sess, result_win, "cursorline", true)
+  else
+    vim.wo[result_win].wrap = false
+    vim.wo[result_win].cursorline = true
+  end
 
   -- Enable scrollbind for result window
   vim.api.nvim_win_set_cursor(result_win, { 1, 0 })
-  vim.wo[result_win].scrollbind = true
+  if sess then
+    effects.set_win_opt(sess, result_win, "scrollbind", true)
+  else
+    vim.wo[result_win].scrollbind = true
+  end
 
   -- Update lifecycle with result buffer/window FIRST
   -- (This must happen before setting winbar so ensure_no_winbar knows we're in conflict mode)

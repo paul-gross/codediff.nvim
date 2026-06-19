@@ -13,12 +13,28 @@ function M.setup(explorer)
   local split = explorer.split
   local git_root = explorer.git_root
 
+  local lifecycle = require("codediff.ui.lifecycle")
+  local session = lifecycle.get_session(explorer.tabpage)
+
   local map_options = { noremap = true, silent = true, nowait = true }
   local explorer_keymaps = config.options.keymaps.explorer or {}
 
+  -- Helper: route a buffer-local keymap through the effects ledger when a session
+  -- is available; fall back to a direct vim.keymap.set when the session is not yet
+  -- present (e.g. during directory-comparison before first view.update).
+  local function set_keymap(mode, lhs, rhs, extra_opts)
+    local opts = vim.tbl_extend("force", map_options, extra_opts or {}, { buffer = split.bufnr })
+    if session then
+      local effects = require("codediff.ui.lifecycle.effects")
+      effects.set_keymap(session, mode, lhs, rhs, opts)
+    else
+      vim.keymap.set(mode, lhs, rhs, opts)
+    end
+  end
+
   -- Toggle expand/collapse or select file
   if explorer_keymaps.select then
-    vim.keymap.set("n", explorer_keymaps.select, function()
+    set_keymap("n", explorer_keymaps.select, function()
       local node = tree:get_node()
       if not node then
         return
@@ -39,7 +55,6 @@ function M.setup(explorer)
           -- Optionally focus the modified (right) pane after file load
           if config.options.explorer.focus_on_select then
             vim.schedule(function()
-              local lifecycle = require("codediff.ui.lifecycle")
               local _, mod_win = lifecycle.get_windows(explorer.tabpage)
               if mod_win and vim.api.nvim_win_is_valid(mod_win) then
                 vim.api.nvim_set_current_win(mod_win)
@@ -48,22 +63,22 @@ function M.setup(explorer)
           end
         end
       end
-    end, vim.tbl_extend("force", map_options, { buffer = split.bufnr, desc = "Select/toggle entry" }))
+    end, { desc = "Select/toggle entry" })
   end
 
   -- Double click also works for files
-  vim.keymap.set("n", "<2-LeftMouse>", function()
+  set_keymap("n", "<2-LeftMouse>", function()
     local node = tree:get_node()
     if not node or not node.data or node.data.type == "group" or node.data.type == "directory" then
       return
     end
     explorer.on_file_select(node.data)
-  end, vim.tbl_extend("force", map_options, { buffer = split.bufnr, desc = "Select file" }))
+  end, { desc = "Select file" })
 
   -- Hover to show full path (K key, like LSP hover)
   local hover_win = nil
   if explorer_keymaps.hover then
-    vim.keymap.set("n", explorer_keymaps.hover, function()
+    set_keymap("n", explorer_keymaps.hover, function()
       -- Close existing hover window
       if hover_win and vim.api.nvim_win_is_valid(hover_win) then
         vim.api.nvim_win_close(hover_win, true)
@@ -120,56 +135,56 @@ function M.setup(explorer)
           end
         end,
       })
-    end, vim.tbl_extend("force", map_options, { buffer = split.bufnr, desc = "Show full path" }))
+    end, { desc = "Show full path" })
   end
 
   -- Refresh explorer (R key)
   if explorer_keymaps.refresh then
-    vim.keymap.set("n", explorer_keymaps.refresh, function()
+    set_keymap("n", explorer_keymaps.refresh, function()
       refresh_module.refresh(explorer)
-    end, vim.tbl_extend("force", map_options, { buffer = split.bufnr, desc = "Refresh explorer" }))
+    end, { desc = "Refresh explorer" })
   end
 
   -- Toggle view mode (i key) - switch between 'list' and 'tree'
   if explorer_keymaps.toggle_view_mode then
-    vim.keymap.set("n", explorer_keymaps.toggle_view_mode, function()
+    set_keymap("n", explorer_keymaps.toggle_view_mode, function()
       actions_module.toggle_view_mode(explorer)
-    end, vim.tbl_extend("force", map_options, { buffer = split.bufnr, desc = "Toggle list/tree view" }))
+    end, { desc = "Toggle list/tree view" })
   end
 
   -- Stage all files (S key)
   if explorer_keymaps.stage_all then
-    vim.keymap.set("n", explorer_keymaps.stage_all, function()
+    set_keymap("n", explorer_keymaps.stage_all, function()
       actions_module.stage_all(explorer)
-    end, vim.tbl_extend("force", map_options, { buffer = split.bufnr, desc = "Stage all files" }))
+    end, { desc = "Stage all files" })
   end
 
   -- Unstage all files (U key)
   if explorer_keymaps.unstage_all then
-    vim.keymap.set("n", explorer_keymaps.unstage_all, function()
+    set_keymap("n", explorer_keymaps.unstage_all, function()
       actions_module.unstage_all(explorer)
-    end, vim.tbl_extend("force", map_options, { buffer = split.bufnr, desc = "Unstage all files" }))
+    end, { desc = "Unstage all files" })
   end
 
   -- Restore/discard changes (X key)
   if explorer_keymaps.restore then
-    vim.keymap.set("n", explorer_keymaps.restore, function()
+    set_keymap("n", explorer_keymaps.restore, function()
       actions_module.restore_entry(explorer, tree)
-    end, vim.tbl_extend("force", map_options, { buffer = split.bufnr, desc = "Restore/discard changes" }))
+    end, { desc = "Restore/discard changes" })
   end
 
   -- Toggle Changes (unstaged) group visibility
   if explorer_keymaps.toggle_changes then
-    vim.keymap.set("n", explorer_keymaps.toggle_changes, function()
+    set_keymap("n", explorer_keymaps.toggle_changes, function()
       actions_module.toggle_group(explorer, "unstaged")
-    end, vim.tbl_extend("force", map_options, { buffer = split.bufnr, desc = "Toggle Changes visibility" }))
+    end, { desc = "Toggle Changes visibility" })
   end
 
   -- Toggle Staged Changes group visibility
   if explorer_keymaps.toggle_staged then
-    vim.keymap.set("n", explorer_keymaps.toggle_staged, function()
+    set_keymap("n", explorer_keymaps.toggle_staged, function()
       actions_module.toggle_group(explorer, "staged")
-    end, vim.tbl_extend("force", map_options, { buffer = split.bufnr, desc = "Toggle Staged Changes visibility" }))
+    end, { desc = "Toggle Staged Changes visibility" })
   end
 
   -- Fold keymaps (Vim-style: zo/zO/zc/zC/za/zA/zR/zM)
@@ -177,6 +192,7 @@ function M.setup(explorer)
     tree = tree,
     keymaps = explorer_keymaps,
     bufnr = split.bufnr,
+    session = session,
   })
 
   -- Note: next_file/prev_file keymaps are set via view/keymaps.lua:setup_all_keymaps()

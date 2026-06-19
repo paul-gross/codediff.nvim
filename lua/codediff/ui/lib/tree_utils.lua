@@ -43,11 +43,14 @@ function M.get_root_node(tree)
 end
 
 -- Setup all fold-related keymaps on a tree buffer.
--- @param opts table { tree, keymaps, bufnr }
+-- @param opts table { tree, keymaps, bufnr, session? }
+-- When opts.session is provided the keymaps are routed through the effects ledger
+-- so they are captured and restored on session teardown.
 function M.setup_fold_keymaps(opts)
   local tree = opts.tree
   local keymaps = opts.keymaps
   local bufnr = opts.bufnr
+  local session = opts.session
 
   local function update_tree_view(node)
     tree:render()
@@ -151,7 +154,13 @@ function M.setup_fold_keymaps(opts)
   for _, binding in ipairs(fold_bindings) do
     local key = keymaps[binding.key]
     if key then
-      vim.keymap.set("n", key, binding.fn, vim.tbl_extend("force", map_options, { buffer = bufnr, desc = binding.desc }))
+      local resolved_opts = vim.tbl_extend("force", map_options, { buffer = bufnr, desc = binding.desc })
+      if session then
+        local effects = require("codediff.ui.lifecycle.effects")
+        effects.set_keymap(session, "n", key, binding.fn, resolved_opts)
+      else
+        vim.keymap.set("n", key, binding.fn, resolved_opts)
+      end
     end
   end
 end

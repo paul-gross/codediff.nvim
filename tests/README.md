@@ -72,6 +72,17 @@ Focus on **integration points** that C tests cannot validate:
 
 **Total: 46 tests** across 5 spec files using industry-standard plenary.nvim framework.
 
+### ✅ Effects Ledger (lifecycle/effects_spec.lua, keymap_ledger_spec.lua, win_symmetry_spec.lua, drift_relocation_spec.lua, conflict/diffget_diffput_spec.lua, lifecycle/effects_symmetry_spec.lua)
+
+Session-scoped reversible effects ledger (`lua/codediff/ui/lifecycle/effects.lua`) — captures prior state before every buffer-local keymap and window-option write, replays on restore:
+
+- **effects_spec.lua** — unit: keymap capture/restore (with/without prior map), capture-once invariant, multi-mode fan-out, idempotent restore, detach alias; window-opt capture/restore, epoch-guard skip
+- **keymap_ledger_spec.lua** — integration: keymaps present after `view.create`, absent after `lifecycle.cleanup`, user `q` map captured and restored, `ih` o/x textobject maps removed after cleanup, `clear_tab_keymaps` leaves window opts untouched
+- **win_symmetry_spec.lua** — window-opt symmetry: scrollbind/wrap/cursorline/list restored after cleanup; TabLeave does NOT restore win opts; `preseed_win_opt` capture-once
+- **diffget_diffput_spec.lua** — conflict mode: user `do`/`dp` maps captured and restored (not clobbered)
+- **drift_relocation_spec.lua** — file-switch drift (stale buffer cleaned, new buffer mapped); gf relocation (detach_buffer removes all maps); BufWinLeave guards (no premature strip on inter-pane focus change)
+- **effects_symmetry_spec.lua** — comprehensive pre/post symmetry regression: snapshots keymaps + window opts BEFORE opening, asserts `same(before, after)` after each close path (`q`, `:tabclose`, `WinClosed`, gf `close=true`, gf `close=false`); N=5 churn no-accumulation probe (reproduces esmuellert/codediff.nvim#394 scrollbind leak symptom)
+
 ## What's NOT Covered
 
 ❌ **Diff algorithm** - Validated by C tests in `c-diff-core/tests/` (3,490 lines)
