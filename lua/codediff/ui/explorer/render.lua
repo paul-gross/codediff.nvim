@@ -11,7 +11,12 @@ local refresh_module = require("codediff.ui.explorer.refresh")
 local welcome = require("codediff.ui.welcome")
 
 local function should_show_welcome(explorer)
-  if not explorer or not explorer.git_root or explorer.dir1 or explorer.dir2 then
+  -- Multi-repo sessions never show the single-repo welcome page
+  if not explorer or explorer.multi_repo then
+    return false
+  end
+  -- Dir mode and multi-repo are both git_root==nil, so check git_root only for single-repo
+  if not explorer.git_root or explorer.dir1 or explorer.dir2 then
     return false
   end
 
@@ -53,7 +58,11 @@ end
 
 function M.create(status_result, git_root, tabpage, width, base_revision, target_revision, opts)
   opts = opts or {}
-  local is_dir_mode = not git_root -- nil git_root signals directory comparison mode
+  -- Three session modes (use explicit discriminator — git_root==nil is overloaded):
+  --   single-repo: git_root set
+  --   dir mode:    git_root nil, opts.multi_repo falsy
+  --   multi-repo:  git_root nil, opts.multi_repo true
+  local is_dir_mode = (not git_root) and not opts.multi_repo
 
   -- Get explorer position and size from config
   local explorer_config = config.options.explorer or {}
@@ -111,7 +120,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
   local selected_group = nil
 
   -- Create tree with buffer number
-  local tree_data = tree_module.create_tree_data(status_result, git_root, base_revision, is_dir_mode, explorer_config.visible_groups)
+  local tree_data = tree_module.create_tree_data(status_result, git_root, base_revision, is_dir_mode, explorer_config.visible_groups, opts.multi_repo)
   local tree = Tree({
     bufnr = split.bufnr,
     nodes = tree_data,
@@ -145,9 +154,9 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
     end
   end
 
-  -- For tree mode, expand directories after initial render when we have node IDs
+  -- For tree/repo mode, expand directories after initial render when we have node IDs
   local explorer_config = config.options.explorer or {}
-  if explorer_config.view_mode == "tree" then
+  if explorer_config.view_mode == "tree" or explorer_config.view_mode == "repo" then
     -- We need to expand directory nodes - they're children of group nodes
     local function expand_all_dirs(parent_node)
       if not parent_node:has_children() then
@@ -179,6 +188,11 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
     tabpage = tabpage,
     dir1 = opts.dir1,
     dir2 = opts.dir2,
+    -- Multi-repo session discriminator (Phase 2).
+    -- multi_repo=true means this session spans N repos; git_root is nil but this
+    -- is NOT dir mode. repos holds the {root,base,target,label} spec list.
+    multi_repo = opts.multi_repo or false,
+    repos = opts.repos,
     base_revision = base_revision,
     target_revision = target_revision,
     status_result = status_result, -- Store initial status result
@@ -202,6 +216,12 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
     local group = file_data.group or "unstaged"
     local jump = not opts.no_jump and config.options.diff.jump_to_first_change
 
+    -- Resolve per-entry overrides, falling back to session-level captured values
+    local root = file_data.git_root or git_root
+    local base = file_data.base_revision or base_revision
+    local target = file_data.target_revision or target_revision
+    local dir_mode = (root == nil)
+
     -- Emit CodeDiffFileSelect User autocmd
     vim.api.nvim_exec_autocmds("User", {
       pattern = "CodeDiffFileSelect",
@@ -214,7 +234,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
     })
 
     -- Dir mode: Compare files from dir1 vs dir2 (no git)
-    if is_dir_mode then
+    if dir_mode then
       local original_path = explorer.dir1 .. "/" .. file_path
       local modified_path = explorer.dir2 .. "/" .. file_path
 
@@ -239,7 +259,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
       return
     end
 
-    local abs_path = git_root .. "/" .. file_path
+    local abs_path = root .. "/" .. file_path
 
     -- Handle untracked files: show file without diff
     if file_data.status == "??" then
@@ -262,29 +282,29 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
         local sess = lifecycle.get_session(tabpage)
         local is_inline = sess and sess.layout == "inline"
 
-        if base_revision and target_revision and target_revision ~= "WORKING" then
+        if base and target and target ~= "WORKING" then
           if is_inline then
             require("codediff.ui.view.inline_view").show_single_file(tabpage, file_path, {
-              revision = target_revision,
-              git_root = git_root,
+              revision = target,
+              git_root = root,
               rel_path = file_path,
               side = "modified",
               whole_file_side = "modified",
             })
           else
-            require("codediff.ui.view.side_by_side").show_added_virtual_file(tabpage, git_root, file_path, target_revision)
+            require("codediff.ui.view.side_by_side").show_added_virtual_file(tabpage, root, file_path, target)
           end
         elseif group == "staged" then
           if is_inline then
             require("codediff.ui.view.inline_view").show_single_file(tabpage, file_path, {
               revision = ":0",
-              git_root = git_root,
+              git_root = root,
               rel_path = file_path,
               side = "modified",
               whole_file_side = "modified",
             })
           else
-            require("codediff.ui.view.side_by_side").show_added_virtual_file(tabpage, git_root, file_path, ":0")
+            require("codediff.ui.view.side_by_side").show_added_virtual_file(tabpage, root, file_path, ":0")
           end
         else
           if is_inline then
@@ -305,36 +325,36 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
         local sess = lifecycle.get_session(tabpage)
         local is_inline = sess and sess.layout == "inline"
 
-        -- Whenever the explorer is anchored to a base_revision (single-rev
+        -- Whenever the explorer is anchored to a base revision (single-rev
         -- like `:CodeDiff HEAD~5` OR revision-revision like `:CodeDiff A B`),
-        -- the deleted file's content lives at base_revision; reading from
+        -- the deleted file's content lives at base; reading from
         -- HEAD/:0 yields nothing because the file is already gone there.
         -- The HEAD/:0 branch is only correct for plain explorer mode
-        -- (no base_revision). Fixes #390.
-        if base_revision then
+        -- (no base). Fixes #390.
+        if base then
           if is_inline then
             require("codediff.ui.view.inline_view").show_single_file(tabpage, file_path, {
-              revision = base_revision,
-              git_root = git_root,
+              revision = base,
+              git_root = root,
               rel_path = file_path,
               side = "original",
               whole_file_side = "original",
             })
           else
-            require("codediff.ui.view.side_by_side").show_deleted_virtual_file(tabpage, git_root, file_path, base_revision)
+            require("codediff.ui.view.side_by_side").show_deleted_virtual_file(tabpage, root, file_path, base)
           end
         else
           if is_inline then
             local revision = (group == "staged") and "HEAD" or ":0"
             require("codediff.ui.view.inline_view").show_single_file(tabpage, file_path, {
               revision = revision,
-              git_root = git_root,
+              git_root = root,
               rel_path = file_path,
               side = "original",
               whole_file_side = "original",
             })
           else
-            require("codediff.ui.view.side_by_side").show_deleted_file(tabpage, git_root, file_path, abs_path, group)
+            require("codediff.ui.view.side_by_side").show_deleted_file(tabpage, root, file_path, abs_path, group)
           end
         end
       end)
@@ -388,26 +408,26 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
       end
     end
 
-    if base_revision and target_revision and target_revision ~= "WORKING" then
+    if base and target and target ~= "WORKING" then
       -- Two revision mode: Compare base vs target
       vim.schedule(function()
         ---@type SessionConfig
         local session_config = {
           mode = "explorer",
-          git_root = git_root,
+          git_root = root,
           original_path = old_path or file_path,
           modified_path = file_path,
-          original_revision = base_revision,
-          modified_revision = target_revision,
+          original_revision = base,
+          modified_revision = target,
         }
         view.update(tabpage, session_config, jump)
       end)
       return
     end
 
-    -- Use base_revision if provided, otherwise default to HEAD
-    local target_revision_single = base_revision or "HEAD"
-    git.resolve_revision(target_revision_single, git_root, function(err_resolve, commit_hash)
+    -- Use base if provided, otherwise default to HEAD
+    local target_revision_single = base or "HEAD"
+    git.resolve_revision(target_revision_single, root, function(err_resolve, commit_hash)
       if err_resolve then
         vim.schedule(function()
           vim.notify(err_resolve, vim.log.levels.ERROR)
@@ -415,13 +435,13 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
         return
       end
 
-      if base_revision then
-        -- Revision mode: Simple comparison of working tree vs base_revision
+      if base then
+        -- Revision mode: Simple comparison of working tree vs base
         vim.schedule(function()
           ---@type SessionConfig
           local session_config = {
             mode = "explorer",
-            git_root = git_root,
+            git_root = root,
             original_path = old_path or file_path,
             modified_path = abs_path,
             original_revision = commit_hash,
@@ -452,7 +472,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
           ---@type SessionConfig
           local session_config = {
             mode = "explorer",
-            git_root = git_root,
+            git_root = root,
             original_path = file_path,
             modified_path = file_path,
             original_revision = original_rev,
@@ -469,7 +489,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
           ---@type SessionConfig
           local session_config = {
             mode = "explorer",
-            git_root = git_root,
+            git_root = root,
             original_path = old_path or file_path, -- Use old_path if rename
             modified_path = file_path, -- New path after rename
             original_revision = commit_hash,
@@ -497,7 +517,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
           ---@type SessionConfig
           local session_config = {
             mode = "explorer",
-            git_root = git_root,
+            git_root = root,
             original_path = file_path,
             modified_path = abs_path,
             original_revision = original_revision,
@@ -509,10 +529,11 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
     end)
   end
 
-  -- Wrap on_file_select to track current file and group
+  -- Wrap on_file_select to track current file, group and git_root
   explorer.on_file_select = function(file_data, opts)
     explorer.current_file_path = file_data.path
     explorer.current_file_group = file_data.group
+    explorer.current_file_git_root = file_data.git_root
     explorer.current_selection = vim.deepcopy(file_data)
     selected_path = file_data.path
     selected_group = file_data.group
@@ -617,7 +638,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
         path = initial_file.path,
         old_path = initial_file.old_path,
         status = initial_file.status,
-        git_root = git_root,
+        git_root = initial_file.git_root or git_root,
         group = initial_file_group,
       })
     end)

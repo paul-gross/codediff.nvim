@@ -24,6 +24,9 @@ COMMANDS                                                  *codediff-commands*
 :CodeDiff install!
     Manually install/update the C library (optional; auto-installed on use).
 
+:CodeDiff repos <root:base..target> ...
+    Multi-repo diff across N repositories in one session. See |codediff-repos|.
+
 ==============================================================================
 USAGE                                                       *codediff-usage*
 
@@ -104,6 +107,28 @@ Options:
   --base, -b      Compare each commit against a fixed revision instead of
                   its parent. Accepts any git revision (HEAD, branch name,
                   commit hash) or WORKING for the current working tree.
+
+Multi-repo diff mode:                                   *codediff-repos*
+>vim
+  :CodeDiff repos ~/project-a:main..HEAD ~/project-b:dev..HEAD
+  :CodeDiff repos ~/api:v1.0..HEAD ~/frontend:v1.0..HEAD
+<
+
+Each token has the form `root:base..target`. `root` is the repository path
+(~ is expanded), `base` and `target` are git revisions, and `..` (double-dot)
+is the separator. Invalid or non-git roots are reported as warnings without
+aborting the remaining repos.
+
+The explorer shows all changed files in one session. The `i` key cycles:
+  list  - flat file list; each row shows a `(repo-name)` label
+  tree  - folder-tree with `(repo-name)` label per row
+  repo  - one collapsible group per repository (multi-repo only)
+
+Per-file git operations (stage, unstage, restore, discard) route to each
+file's own repository. `S`/`U` fan out across all repos.
+
+Also available via `require("codediff").diff_repos(specs, opts)`. See
+|codediff-lua-api|.
 
 Git merge tool:
 >sh
@@ -350,6 +375,17 @@ LUA API                                                   *codediff-lua-api*
 Primary entry point:
 >lua
   require("codediff").setup({ ... })
+<
+
+Multi-repo diff:
+>lua
+  -- Open an explorer session aggregating N repos.
+  -- specs: list of { root=, base=, target=, label=? }
+  -- Positional form { root, base, target } is also accepted.
+  require("codediff").diff_repos({
+    { root = "~/project-a", base = "main",  target = "HEAD" },
+    { root = "~/project-b", base = "v1.0",  target = "HEAD", label = "backend" },
+  }, { layout = "inline" })  -- opts is optional
 <
 
 Advanced usage (internal modules):

@@ -27,6 +27,7 @@ https://github.com/user-attachments/assets/64c41f01-dffe-4318-bce4-16eec8de356e
 - **Inline (unified) diff view** — single-window layout with deleted lines as virtual overlays, with treesitter syntax highlighting
 - **Toggle layout** — switch between side-by-side and inline layout at runtime with `t`
 - **Git integration**: Compare between any git revision (HEAD, commits, branches, tags)
+- **Multi-repo diff**: Aggregate changed files across N repositories into one explorer session, each file diffed with the full char-level engine
 - **Same implementation as VSCode's diff engine**, providing identical visual highlighting for most scenarios
 - **Fast C-based diff computation** using FFI with **multi-core parallelization** (OpenMP)
 - **Async git operations** - non-blocking file retrieval from git
@@ -118,7 +119,7 @@ https://github.com/user-attachments/assets/64c41f01-dffe-4318-bce4-16eec8de356e
         folder_closed = "",  -- Nerd Font folder icon (customize as needed)
         folder_open = "",    -- Nerd Font folder-open icon
       },
-      view_mode = "list",    -- "list" or "tree"
+      view_mode = "list",    -- "list", "tree", or "repo" (repo grouping, multi-repo sessions only)
       flatten_dirs = true,   -- Flatten single-child directory chains in tree view
       file_filter = {
         ignore = { ".git/**", ".jj/**" },  -- Glob patterns to hide (e.g., {"*.lock", "dist/*"})
@@ -170,7 +171,7 @@ https://github.com/user-attachments/assets/64c41f01-dffe-4318-bce4-16eec8de356e
         select = "<CR>",    -- Open diff for selected file
         hover = "K",        -- Show file diff preview
         refresh = "R",      -- Refresh git status
-        toggle_view_mode = "i",  -- Toggle between 'list' and 'tree' views
+        toggle_view_mode = "i",  -- Toggle view mode: list/tree (single-repo) or list/tree/repo (multi-repo)
         stage_all = "S",    -- Stage all files
         unstage_all = "U",  -- Unstage all files
         restore = "X",      -- Discard changes (restore file)
@@ -396,6 +397,29 @@ Compare two directories without git:
 
 Shows files as Added (A), Deleted (D), or Modified (M) using file size plus byte-level content comparison. Select a file to view its diff.
 
+### Multi-Repo Diff Mode
+
+Aggregate changed files across multiple git repositories into one explorer session:
+
+```vim
+" Compare main..HEAD in two repos simultaneously
+:CodeDiff repos ~/project-a:main..HEAD ~/project-b:dev..HEAD
+
+" Any number of repos; each token is root:base..target
+:CodeDiff repos ~/api:v1.0..HEAD ~/frontend:v1.0..HEAD ~/shared:v1.0..HEAD
+```
+
+Each token has the form `root:base..target` where `root` is the repository path (supports `~`), `base` and `target` are git revisions, and `..` (double-dot) is the separator. Invalid or non-git roots are reported as warnings without aborting the remaining repos.
+
+The explorer shows all changed files from all repos in one session. The `i` key cycles through view modes:
+- **`list`** — flat file list with a `(repo-name)` label per row
+- **`tree`** — folder-tree grouped by directory (with repo label per row)
+- **`repo`** — files grouped by repository (one collapsible group per repo, folder tree inside); only available in multi-repo sessions
+
+Per-file git operations (stage, unstage, restore, discard) route to each file's own repository. `stage_all` / `unstage_all` fan out across all repos.
+
+This mode is also available via the Lua API — see [Lua API](#lua-api) below.
+
 ### File History Mode
 
 Review commits on a per-commit basis:
@@ -484,6 +508,13 @@ require("codediff").setup({
     char_brightness = 1.4,
   },
 })
+
+-- Multi-repo diff: aggregate N repos into one explorer session
+-- Each spec accepts named fields or positional {root, base, target}
+require("codediff").diff_repos({
+  { root = "~/project-a", base = "main", target = "HEAD" },
+  { root = "~/project-b", base = "main", target = "HEAD", label = "backend" },
+}, { layout = "inline" })  -- opts is optional
 
 -- Advanced usage - direct access to internal modules
 local diff = require("codediff.diff")
@@ -733,6 +764,7 @@ codediff.nvim/
 - [x] Flexible highlight configuration (colorscheme-aware)
 - [x] Integration tests (C + Lua with plenary.nvim)
 - [x] File history mode (per-commit review, similar to DiffviewFileHistory)
+- [x] Multi-repo diff (aggregate N repos into one explorer session)
 
 ### Future Enhancements
 

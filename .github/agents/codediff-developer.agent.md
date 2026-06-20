@@ -25,6 +25,7 @@ lua/codediff/
 │   ├── diff.lua          -- FFI diff computation (C library)
 │   ├── git.lua           -- Async git operations
 │   ├── dir.lua           -- Directory comparison
+│   ├── multi_repo.lua    -- Multi-repo aggregation (fan-out + merge)
 │   └── virtual_file.lua  -- Virtual buffer handling
 └── ui/
     ├── explorer/         -- File explorer sidebar
@@ -124,6 +125,7 @@ e2e.exec("CodeDiff HEAD~1")
 | Staging/unstaging | `ui/explorer/actions.lua` |
 | Keymaps | `ui/explorer/keymaps.lua`, `ui/view/keymaps.lua` |
 | Session lifecycle | `ui/lifecycle/init.lua` |
+| Multi-repo diff | `core/multi_repo.lua`, `init.lua`, `commands.lua`, `ui/explorer/tree.lua` |
 
 ## Important Notes
 

@@ -31,7 +31,9 @@ end
 ---@field modified_revision string?
 ---@field conflict boolean? For merge conflict mode: render both sides against base
 ---@field layout "side-by-side"|"inline"? Optional per-invocation layout override
----@field explorer_data table? For explorer mode: { status_result }
+---@field explorer_data table? For explorer mode: { status_result, focus_file?, multi_repo?, repos? }
+---   multi_repo: boolean — true for multi-repo sessions (disambiguates from dir mode where git_root is also nil)
+---   repos: {root:string, base:string, target:string, label:string}[] — per-repo specs for multi-repo sessions
 ---@field history_data table? For history mode: { commits, range, file_path, line_range }
 ---@field line_range table? For history line-range mode: { start_line, end_line }
 

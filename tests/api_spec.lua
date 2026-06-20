@@ -26,6 +26,10 @@ describe("Public API", function()
     it("exports prev_file function", function()
       assert.is_function(codediff.prev_file)
     end)
+
+    it("exports diff_repos function", function()
+      assert.is_function(codediff.diff_repos)
+    end)
   end)
 
   describe("navigation functions", function()

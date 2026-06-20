@@ -8,11 +8,11 @@ local layout = require("codediff.ui.layout")
 
 -- Find line number for a file node by scanning the tree
 -- Returns the line number or nil if not found
-local function find_node_line(explorer, path, group)
+local function find_node_line(explorer, path, group, node_git_root)
   local line_count = vim.api.nvim_buf_line_count(explorer.bufnr)
   for line = 1, line_count do
     local node = explorer.tree:get_node(line)
-    if node and node.data and node.data.path == path and node.data.group == group then
+    if node and node.data and node.data.path == path and node.data.group == group and node.data.git_root == node_git_root then
       return line
     end
   end
@@ -38,10 +38,11 @@ function M.navigate_next(explorer)
     return
   end
 
-  -- Find current index (match both path AND group for files in both staged/unstaged)
+  -- Find current index (match path, group AND git_root for files across repos)
   local current_index = 0
+  local current_git_root = explorer.current_file_git_root
   for i, file in ipairs(all_files) do
-    if file.data.path == current_path and file.data.group == current_group then
+    if file.data.path == current_path and file.data.group == current_group and file.data.git_root == current_git_root then
       current_index = i
       break
     end
@@ -60,7 +61,7 @@ function M.navigate_next(explorer)
   -- Update tree selection visually (switch to explorer window temporarily)
   local current_win = vim.api.nvim_get_current_win()
   if vim.api.nvim_win_is_valid(explorer.winid) then
-    local line = find_node_line(explorer, next_file.data.path, next_file.data.group)
+    local line = find_node_line(explorer, next_file.data.path, next_file.data.group, next_file.data.git_root)
     if line then
       vim.api.nvim_set_current_win(explorer.winid)
       vim.api.nvim_win_set_cursor(explorer.winid, { line, 0 })
@@ -91,10 +92,11 @@ function M.navigate_prev(explorer)
     return
   end
 
-  -- Find current index (match both path AND group for files in both staged/unstaged)
+  -- Find current index (match path, group AND git_root for files across repos)
   local current_index = 0
+  local current_git_root = explorer.current_file_git_root
   for i, file in ipairs(all_files) do
-    if file.data.path == current_path and file.data.group == current_group then
+    if file.data.path == current_path and file.data.group == current_group and file.data.git_root == current_git_root then
       current_index = i
       break
     end
@@ -117,7 +119,7 @@ function M.navigate_prev(explorer)
   -- Update tree selection visually (switch to explorer window temporarily)
   local current_win = vim.api.nvim_get_current_win()
   if vim.api.nvim_win_is_valid(explorer.winid) then
-    local line = find_node_line(explorer, prev_file.data.path, prev_file.data.group)
+    local line = find_node_line(explorer, prev_file.data.path, prev_file.data.group, prev_file.data.git_root)
     if line then
       vim.api.nvim_set_current_win(explorer.winid)
       vim.api.nvim_win_set_cursor(explorer.winid, { line, 0 })
@@ -155,7 +157,9 @@ function M.toggle_visibility(explorer)
   end
 end
 
--- Toggle view mode between 'list' and 'tree'
+-- Toggle view mode cycle.
+-- Single-repo sessions: list -> tree -> list (2-state, "repo" skipped).
+-- Multi-repo sessions:  list -> tree -> repo -> list (3-state).
 function M.toggle_view_mode(explorer)
   if not explorer then
     return
@@ -163,7 +167,21 @@ function M.toggle_view_mode(explorer)
 
   local explorer_config = config.options.explorer or {}
   local current_mode = explorer_config.view_mode or "list"
-  local new_mode = (current_mode == "list") and "tree" or "list"
+
+  local new_mode
+  if explorer and explorer.multi_repo then
+    -- 3-state cycle for multi-repo sessions
+    if current_mode == "list" then
+      new_mode = "tree"
+    elseif current_mode == "tree" then
+      new_mode = "repo"
+    else
+      new_mode = "list"
+    end
+  else
+    -- 2-state cycle for single-repo sessions
+    new_mode = (current_mode == "list") and "tree" or "list"
+  end
 
   -- Update config
   config.options.explorer.view_mode = new_mode
@@ -269,7 +287,7 @@ end
 
 -- Stage/unstage toggle for the selected entry in explorer (file or directory)
 function M.toggle_stage_entry(explorer, tree)
-  if not explorer or not explorer.git_root then
+  if not explorer or (not explorer.git_root and not explorer.multi_repo) then
     vim.notify("Stage/unstage only available in git mode", vim.log.levels.WARN)
     return
   end
@@ -282,56 +300,115 @@ function M.toggle_stage_entry(explorer, tree)
   local entry_type = node.data.type
   local group = node.data.group
 
+  local entry_git_root = node.data.git_root or explorer.git_root
+
   if entry_type == "directory" then
     -- Directory uses dir_path, not path
     local dir_path = node.data.dir_path
     if dir_path then
-      toggle_stage_directory(explorer.git_root, dir_path, group)
+      toggle_stage_directory(entry_git_root, dir_path, group)
     end
   else
     -- File uses path
     local path = node.data.path
     if path then
-      M.toggle_stage_file(explorer.git_root, path, group)
+      M.toggle_stage_file(entry_git_root, path, group)
     end
   end
+end
+
+-- Collect the distinct git roots for a given explorer.
+-- Single-repo: returns { explorer.git_root }.
+-- Multi-repo: derives distinct roots from explorer.repos (preferred) or
+--             from the current file entries in the tree (fallback).
+local function get_all_git_roots(explorer)
+  if explorer.multi_repo then
+    if explorer.repos and #explorer.repos > 0 then
+      local seen = {}
+      local roots = {}
+      for _, repo in ipairs(explorer.repos) do
+        local root = repo.root
+        if root and not seen[root] then
+          seen[root] = true
+          table.insert(roots, root)
+        end
+      end
+      return roots
+    end
+    -- Fallback: derive from status_result entries when explorer.repos was not
+    -- populated (e.g. if diff_repos is called without an explicit repos list).
+    local seen = {}
+    local roots = {}
+    local status = explorer.status_result or {}
+    for _, list in ipairs({ status.unstaged, status.staged, status.conflicts }) do
+      for _, entry in ipairs(list or {}) do
+        local r = entry.git_root
+        if r and not seen[r] then
+          seen[r] = true
+          table.insert(roots, r)
+        end
+      end
+    end
+    return roots
+  end
+  -- Single-repo
+  if explorer.git_root then
+    return { explorer.git_root }
+  end
+  return {}
 end
 
 -- Stage all files
 function M.stage_all(explorer)
-  if not explorer or not explorer.git_root then
+  if not explorer or (not explorer.git_root and not explorer.multi_repo) then
     vim.notify("Stage all only available in git mode", vim.log.levels.WARN)
     return
   end
 
-  git.stage_all(explorer.git_root, function(err)
-    if err then
-      vim.schedule(function()
-        vim.notify(err, vim.log.levels.ERROR)
-      end)
-    end
-  end)
+  local roots = get_all_git_roots(explorer)
+  if #roots == 0 then
+    vim.notify("Stage all: no git roots found", vim.log.levels.WARN)
+    return
+  end
+
+  for _, root in ipairs(roots) do
+    git.stage_all(root, function(err)
+      if err then
+        vim.schedule(function()
+          vim.notify(err, vim.log.levels.ERROR)
+        end)
+      end
+    end)
+  end
 end
 
 -- Unstage all files
 function M.unstage_all(explorer)
-  if not explorer or not explorer.git_root then
+  if not explorer or (not explorer.git_root and not explorer.multi_repo) then
     vim.notify("Unstage all only available in git mode", vim.log.levels.WARN)
     return
   end
 
-  git.unstage_all(explorer.git_root, function(err)
-    if err then
-      vim.schedule(function()
-        vim.notify(err, vim.log.levels.ERROR)
-      end)
-    end
-  end)
+  local roots = get_all_git_roots(explorer)
+  if #roots == 0 then
+    vim.notify("Unstage all: no git roots found", vim.log.levels.WARN)
+    return
+  end
+
+  for _, root in ipairs(roots) do
+    git.unstage_all(root, function(err)
+      if err then
+        vim.schedule(function()
+          vim.notify(err, vim.log.levels.ERROR)
+        end)
+      end
+    end)
+  end
 end
 
 -- Restore/discard changes to the selected file or directory
 function M.restore_entry(explorer, tree)
-  if not explorer or not explorer.git_root then
+  if not explorer or (not explorer.git_root and not explorer.multi_repo) then
     vim.notify("Restore only available in git mode", vim.log.levels.WARN)
     return
   end
@@ -367,10 +444,12 @@ function M.restore_entry(explorer, tree)
   local prompt = action_word .. display_name .. "?"
   local choice = vim.fn.confirm(prompt, "&Discard\n&Cancel", 2, "Warning")
 
+  local entry_git_root = node.data.git_root or explorer.git_root
+
   if choice == 1 then
     if is_untracked then
       -- Delete untracked file/directory
-      git.delete_untracked(explorer.git_root, entry_path, function(err)
+      git.delete_untracked(entry_git_root, entry_path, function(err)
         if err then
           vim.schedule(function()
             vim.notify(err, vim.log.levels.ERROR)
@@ -380,8 +459,8 @@ function M.restore_entry(explorer, tree)
     elseif is_directory then
       -- Directory may contain both tracked and untracked files
       -- Run git restore for tracked changes, then git clean for untracked
-      git.restore_file(explorer.git_root, entry_path, explorer.base_revision, function(restore_err)
-        git.delete_untracked(explorer.git_root, entry_path, function(clean_err)
+      git.restore_file(entry_git_root, entry_path, explorer.base_revision, function(restore_err)
+        git.delete_untracked(entry_git_root, entry_path, function(clean_err)
           if restore_err and clean_err then
             vim.schedule(function()
               vim.notify("Failed to restore: " .. restore_err, vim.log.levels.ERROR)
@@ -391,7 +470,7 @@ function M.restore_entry(explorer, tree)
       end)
     else
       -- Restore tracked file
-      git.restore_file(explorer.git_root, entry_path, explorer.base_revision, function(err)
+      git.restore_file(entry_git_root, entry_path, explorer.base_revision, function(err)
         if err then
           vim.schedule(function()
             vim.notify(err, vim.log.levels.ERROR)

@@ -25,12 +25,18 @@ function M.setup_explorer(tabpage, session_config, original_win, modified_win)
   local status_result = session_config.explorer_data.status_result
 
   local explorer_opts = {}
-  if not session_config.git_root then
+  local is_multi_repo = session_config.explorer_data.multi_repo == true
+  -- Dir mode: git_root is nil and NOT a multi-repo session
+  if not session_config.git_root and not is_multi_repo then
     explorer_opts.dir1 = session_config.original_path
     explorer_opts.dir2 = session_config.modified_path
   end
   if session_config.explorer_data.focus_file then
     explorer_opts.focus_file = session_config.explorer_data.focus_file
+  end
+  if is_multi_repo then
+    explorer_opts.multi_repo = true
+    explorer_opts.repos = session_config.explorer_data.repos
   end
 
   local explorer_obj =

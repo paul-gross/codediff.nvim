@@ -158,6 +158,79 @@ Comprehensive tests verify:
 - ✓ Filetype detection
 - ✓ Scrollbind synchronization
 
+## Multi-Repo Explorer Sessions
+
+The explorer supports a multi-repo mode that aggregates changed files across N
+repositories into a single session.
+
+### Entry points
+
+**`:CodeDiff repos`** — each argument is a `root:base..target` token:
+
+```vim
+:CodeDiff repos ~/project-a:main..HEAD ~/project-b:dev..HEAD
+```
+
+**`require("codediff").diff_repos(specs, opts)`** — Lua API:
+
+```lua
+require("codediff").diff_repos({
+  { root = "~/project-a", base = "main", target = "HEAD" },
+  { root = "~/project-b", base = "v1.0", target = "HEAD", label = "backend" },
+})
+```
+
+Each spec accepts `root`, `base`, `target` (required) and `label` (optional;
+defaults to directory basename). Positional `{ root, base, target }` is also
+accepted. Invalid or non-git roots emit a per-repo warning without aborting.
+
+### Session shape
+
+Multi-repo sessions set `explorer.multi_repo = true` and `explorer.git_root = nil`
+(same as dir mode but distinguished by the `multi_repo` flag). Each file entry
+carries `git_root`, `base_revision`, `target_revision`, and `repo_label` from
+`core/multi_repo.lua`'s aggregation step.
+
+### Per-entry root resolution
+
+`on_file_select` in `render.lua` reads `file_data.git_root`, `file_data.base_revision`,
+and `file_data.target_revision` in preference to the session-level scalars.
+Single-repo sessions carry no per-entry overrides and fall back to the
+session scalar — byte-identical behaviour to before.
+
+Identity keys are `(git_root, path, group)` (was `(path, group)`), handled in
+`actions.lua` (`navigate_next/prev`, `find_node_line`) and `refresh.lua`
+re-select. This prevents same-relpath collisions across repos.
+
+### View mode: `"repo"`
+
+Multi-repo sessions introduce a third view mode (`view_mode = "repo"`) that
+partitions the file list by `repo_label` and renders one collapsible group
+node per repo, with a normal folder tree inside.
+
+The `toggle_view_mode` (`i`) cycle is:
+- **Single-repo** — `list → tree → list` (2-state)
+- **Multi-repo** — `list → tree → repo → list` (3-state)
+
+This is implemented in `actions.lua:toggle_view_mode` gated on `explorer.multi_repo`,
+and in `tree.lua:create_tree_data` for the `"repo"` branch.
+
+### Flat list repo labels
+
+In `list` and `tree` modes, `nodes.lua` appends `(repo_label)` to each file
+row when `file_data.repo_label` is present. Single-repo sessions omit the label.
+
+### Stage-all fan-out
+
+`stage_all` / `unstage_all` call `get_all_git_roots(explorer)` which derives
+distinct roots from `explorer.repos` (preferred) or the status_result entries
+(fallback), then issues a git operation per root. No atomic cross-repo staging.
+
+### Auto-refresh
+
+Multi-repo sessions use BufEnter focus events only; no per-repo `.git` directory
+watcher is installed (v1 limit, deferred as a follow-up).
+
 ## Future Enhancements
 
 Possible improvements:
@@ -168,3 +241,4 @@ Possible improvements:
 - Keyboard shortcuts for common git operations
 - Support for merge conflicts
 - Integration with git blame
+- Per-repo `.git` watcher for multi-repo auto-refresh (v2)

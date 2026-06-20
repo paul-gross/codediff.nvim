@@ -104,7 +104,10 @@ function M.create_file_nodes(files, git_root, group)
         icon_color = icon_color,
         status_symbol = status_info.symbol,
         status_color = status_info.color,
-        git_root = git_root,
+        git_root = file.git_root or git_root,
+        base_revision = file.base_revision,
+        target_revision = file.target_revision,
+        repo_label = file.repo_label,
         group = group,
       },
     })
@@ -227,7 +230,10 @@ function M.create_tree_file_nodes(files, git_root, group)
             icon_color = icon_color,
             status_symbol = status_info.symbol,
             status_color = status_info.color,
-            git_root = git_root,
+            git_root = file.git_root or git_root,
+            base_revision = file.base_revision,
+            target_revision = file.target_revision,
+            repo_label = file.repo_label,
             group = group,
             indent_state = node_indent_state,
           },
@@ -389,15 +395,24 @@ function M.prepare_node(node, max_width, selected_path, selected_group)
       end
     end
 
+    -- Repo label suffix (multi-repo flat list only; gated on data.repo_label presence)
+    local repo_label_str = ""
+    if data.repo_label ~= nil and (view_mode == "list" or view_mode == "repo") then
+      repo_label_str = " (" .. data.repo_label .. ")"
+    end
+
     -- Append filename (normal weight) and directory (dimmed)
     line:append(filename, get_hl("Normal"))
     if #directory > 0 then
       line:append(" ", get_hl("Normal"))
       line:append(directory, get_hl("ExplorerDirectorySmall"))
     end
+    if #repo_label_str > 0 then
+      line:append(repo_label_str, get_hl("ExplorerDirectorySmall"))
+    end
 
     -- Right-align status symbol; trailing `status_margin` cells keep it visible against the window edge
-    local content_len = vim.fn.strdisplaywidth(filename) + space_len + vim.fn.strdisplaywidth(directory)
+    local content_len = vim.fn.strdisplaywidth(filename) + space_len + vim.fn.strdisplaywidth(directory) + vim.fn.strdisplaywidth(repo_label_str)
     local padding_needed = math.max(2, available_for_content - content_len + 2)
     line:append(string.rep(" ", padding_needed), get_hl("Normal"))
     line:append(status_symbol, get_hl(data.status_color))

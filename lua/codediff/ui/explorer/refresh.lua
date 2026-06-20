@@ -68,9 +68,10 @@ function M.setup_auto_refresh(explorer, tabpage)
     end,
   })
 
-  -- Watch .git directory for changes (git mode only)
-  -- Dir mode skips this - relies on BufEnter refresh only
-  if explorer.git_root then
+  -- Watch .git directory for changes (single-repo git mode only).
+  -- Dir mode and multi-repo both skip this — BufEnter refresh only.
+  -- (Multi-repo has no single .git dir to watch; a per-repo watcher is deferred to a later phase.)
+  if explorer.git_root and not explorer.multi_repo then
     local git = require("codediff.core.git")
     git.get_git_dir(explorer.git_root, function(err, git_dir)
       if err or not git_dir then
@@ -236,8 +237,10 @@ function M.refresh(explorer)
         return
       end
 
-      -- Rebuild tree nodes using same structure as create_tree_data
-      local root_nodes = tree_module.create_tree_data(status_result, explorer.git_root, explorer.base_revision, not explorer.git_root, explorer.visible_groups)
+      -- Rebuild tree nodes using same structure as create_tree_data.
+      -- is_dir_mode uses the explicit discriminator: git_root==nil AND not multi_repo.
+      local is_dir_mode = (not explorer.git_root) and not explorer.multi_repo
+      local root_nodes = tree_module.create_tree_data(status_result, explorer.git_root, explorer.base_revision, is_dir_mode, explorer.visible_groups, explorer.multi_repo)
 
       -- Expand all groups
       for _, node in ipairs(root_nodes) do
@@ -247,9 +250,9 @@ function M.refresh(explorer)
       -- Update tree
       explorer.tree:set_nodes(root_nodes)
 
-      -- For tree mode, expand directories after setting nodes
+      -- For tree/repo mode, expand directories after setting nodes
       local explorer_config = config.options.explorer or {}
-      if explorer_config.view_mode == "tree" then
+      if explorer_config.view_mode == "tree" or explorer_config.view_mode == "repo" then
         local function expand_all_dirs(parent_node)
           if not parent_node:has_children() then
             return
@@ -305,10 +308,13 @@ function M.refresh(explorer)
       if explorer.current_file_path and total_files > 0 then
         local found_file = nil
         local found_group = nil
-        -- Search helper: look in a specific status list
+        local current_file_git_root = explorer.current_file_git_root
+        -- Search helper: look in a specific status list, matching path and effective git_root.
+        -- Raw status entries may not carry git_root (single-repo); fall back to explorer.git_root.
         local function search_group(files, group_name)
           for _, f in ipairs(files or {}) do
-            if f.path == explorer.current_file_path then
+            local effective_root = f.git_root or explorer.git_root
+            if f.path == explorer.current_file_path and effective_root == current_file_git_root then
               return f, group_name
             end
           end
@@ -342,7 +348,7 @@ function M.refresh(explorer)
             path = found_file.path,
             old_path = found_file.old_path,
             status = found_file.status,
-            git_root = explorer.git_root,
+            git_root = found_file.git_root or explorer.git_root,
             group = found_group,
           }, { no_jump = true })
         else
@@ -355,7 +361,22 @@ function M.refresh(explorer)
   end
 
   -- Use appropriate function based on mode
-  if not explorer.git_root then
+  if explorer.multi_repo then
+    -- Multi-repo mode: fan out across all repos and merge into one status_result.
+    local multi_repo = require("codediff.core.multi_repo")
+    multi_repo.aggregate(explorer.repos, function(merged_result, agg_errors)
+      if agg_errors and #agg_errors > 0 then
+        -- Surface per-repo errors as warnings but continue with whatever succeeded.
+        vim.schedule(function()
+          for _, e in ipairs(agg_errors) do
+            vim.notify("codediff multi-repo: " .. e.root .. ": " .. e.error, vim.log.levels.WARN)
+          end
+        end)
+      end
+      process_result(nil, merged_result)
+    end)
+    return
+  elseif not explorer.git_root then
     -- Dir mode: re-scan directories
     local dir_mod = require("codediff.core.dir")
     local diff = dir_mod.diff_directories(explorer.dir1, explorer.dir2)

@@ -2,7 +2,7 @@
 local M = {}
 
 -- Subcommands available for :CodeDiff
-M.SUBCOMMANDS = { "merge", "file", "dir", "history", "install" }
+M.SUBCOMMANDS = { "merge", "file", "dir", "history", "install", "repos" }
 
 local git = require("codediff.core.git")
 local lifecycle = require("codediff.ui.lifecycle")
@@ -21,6 +21,110 @@ local function parse_triple_dot(arg)
     return base, target ~= "" and target or nil
   end
   return nil, nil
+end
+
+--- Parse double-dot syntax used in repos tokens: "base..target".
+-- Unlike triple-dot, this is a strict two-part split; both parts are required.
+-- @param arg string: The revision spec (e.g. "main..HEAD")
+-- @return string|nil, string|nil, string|nil: base_rev, target_rev, error_msg
+local function parse_double_dot(arg)
+  if not arg then
+    return nil, nil, "empty revision spec"
+  end
+  -- Plain string search for ".." (first_dotdot is its 1-based position)
+  local first_dotdot = arg:find("..", 1, true)
+  if not first_dotdot then
+    return nil, nil, "missing '..' in revision spec: " .. arg
+  end
+  -- Reject triple-dot: if the char immediately after ".." is also ".", it's "..."
+  local third_dot = arg:sub(first_dotdot + 2, first_dotdot + 2)
+  if third_dot == "." then
+    return nil, nil, "use '..' (not '...') in revision spec for repos: " .. arg
+  end
+  local base = arg:sub(1, first_dotdot - 1)
+  local target = arg:sub(first_dotdot + 2)
+  -- Reject ambiguous multi-dot specs like a..b..c (more than one ".." in the spec)
+  if target:find("..", 1, true) then
+    return nil, nil, "revision spec must contain exactly one '..', got: " .. arg
+  end
+  if base == "" then
+    return nil, nil, "base revision is empty in: " .. arg
+  end
+  if target == "" then
+    return nil, nil, "target revision is empty in: " .. arg
+  end
+  return base, target, nil
+end
+
+--- Parse a single repos token of the form "root:base..target".
+-- The root is split on the FIRST colon so Windows absolute paths (C:\...) are handled.
+-- @param token string: e.g. "~/a:main..HEAD" or "/path/to/repo:dev..HEAD"
+-- @return table|nil, string|nil: { root, base, target } or nil plus error message
+local function parse_repos_token(token)
+  if not token or token == "" then
+    return nil, "empty token"
+  end
+
+  -- Split on the FIRST colon to separate root from revision spec.
+  -- We look for the first ':' that is not the second char (Windows drive letter guard).
+  local colon_pos = nil
+  for i = 1, #token do
+    local ch = token:sub(i, i)
+    if ch == ":" then
+      -- On Windows, a single-letter drive (e.g. "C:") at position 2 is not a separator.
+      if i == 2 and token:sub(1, 1):match("[A-Za-z]") then
+        -- This looks like a drive letter; keep scanning
+      else
+        colon_pos = i
+        break
+      end
+    end
+  end
+
+  if not colon_pos then
+    return nil, "missing ':' separator in token (expected root:base..target): " .. token
+  end
+
+  local root_raw = token:sub(1, colon_pos - 1)
+  local rev_spec = token:sub(colon_pos + 1)
+
+  if root_raw == "" then
+    return nil, "root is empty in token: " .. token
+  end
+
+  -- Expand ~ and environment variables, then resolve to absolute path
+  local root = vim.fn.fnamemodify(vim.fn.expand(root_raw), ":p")
+  -- Strip trailing separator for consistency
+  root = root:gsub("[/\\]$", "")
+
+  local base, target, rev_err = parse_double_dot(rev_spec)
+  if rev_err then
+    return nil, "bad revision spec in token '" .. token .. "': " .. rev_err
+  end
+
+  return { root = root, base = base, target = target }, nil
+end
+
+--- Handle :CodeDiff repos <token>... subcommand.
+-- Each token has the form "root:base..target".
+local function handle_repos(token_args, global_opts)
+  if #token_args == 0 then
+    vim.notify("Usage: :CodeDiff repos <root:base..target> [<root:base..target> ...]", vim.log.levels.ERROR)
+    return
+  end
+
+  local specs = {}
+  for _, token in ipairs(token_args) do
+    local spec, err = parse_repos_token(token)
+    if err then
+      vim.notify("CodeDiff repos: " .. err, vim.log.levels.ERROR)
+      return
+    end
+    table.insert(specs, spec)
+  end
+
+  local codediff = require("codediff")
+  codediff.diff_repos(specs, { layout = global_opts.layout })
 end
 
 --- Handles diffing the current buffer against a given git revision.
@@ -769,6 +873,10 @@ function M.vscode_diff(opts)
     end
 
     handle_history(range, file_path, flags, line_range, global_opts)
+  elseif subcommand == "repos" then
+    -- :CodeDiff repos <root:base..target> [<root:base..target> ...]
+    local token_args = vim.list_slice(args, 2)
+    handle_repos(token_args, global_opts)
   elseif subcommand == "install" or subcommand == "install!" then
     -- :CodeDiff install or :CodeDiff install!
     -- Handle both :CodeDiff! install and :CodeDiff install!

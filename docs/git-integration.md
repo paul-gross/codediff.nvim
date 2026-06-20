@@ -204,6 +204,52 @@ Useful for seeing how far each historical commit is from your current state.
 **Fixed base (`--base <revision>`):** Each commit compared to a specific ref.
 Useful for seeing how each commit differs from a branch tip or tag.
 
+## Multi-Repo Diff
+
+CodeDiff can aggregate changed files across multiple git repositories into a
+single explorer session, using the same char-level diff engine as single-repo
+mode.
+
+### Command
+
+```vim
+" Each token: root:base..target  (double-dot, not triple-dot)
+:CodeDiff repos ~/project-a:main..HEAD ~/project-b:dev..HEAD
+```
+
+`~` is expanded and relative paths are resolved. Invalid or non-git roots
+produce a per-repo warning without aborting the rest.
+
+### Lua API
+
+```lua
+require("codediff").diff_repos({
+  { root = "~/project-a", base = "main", target = "HEAD" },
+  { root = "~/project-b", base = "v1.0", target = "HEAD", label = "backend" },
+}, { layout = "inline" })  -- opts is optional
+```
+
+`label` overrides the display name shown in the explorer (defaults to the
+repository directory basename). The positional form `{ root, base, target }`
+is also accepted.
+
+### Explorer behaviour
+
+Files from all repos appear in one session. The `i` key cycles view modes:
+
+| Mode   | Behaviour |
+|--------|-----------|
+| `list` | Flat file list. Each row shows a `(repo-name)` label. |
+| `tree` | Folder-tree layout with `(repo-name)` label per row. |
+| `repo` | One collapsible group per repository, with a folder tree inside each group. Only available in multi-repo sessions. |
+
+Per-file git operations (stage, unstage, restore, discard) route to the
+correct repository automatically. `S` / `U` (stage\_all / unstage\_all) fan
+out across all repos; each repo's index is updated independently (no atomic
+cross-repo commit).
+
+Auto-refresh uses BufEnter focus events only (no per-repo `.git` watcher in v1).
+
 ## Future Enhancements
 
 Potential improvements:
