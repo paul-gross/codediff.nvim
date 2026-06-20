@@ -13,6 +13,9 @@ local session = require("codediff.ui.lifecycle.session")
 local state = require("codediff.ui.lifecycle.state")
 local cleanup = require("codediff.ui.lifecycle.cleanup")
 local accessors = require("codediff.ui.lifecycle.accessors")
+local conflict_state = require("codediff.ui.lifecycle.conflict_state")
+local tab_keymaps = require("codediff.ui.lifecycle.tab_keymaps")
+local auto_sync = require("codediff.ui.lifecycle.auto_sync")
 
 -- Eager require: effects.lua has no circular dependencies; loading up front avoids
 -- lazy-require failures when autocmds fire after a `cd` changes CWD.
@@ -47,12 +50,14 @@ M.is_original_virtual = accessors.is_original_virtual
 M.is_modified_virtual = accessors.is_modified_virtual
 M.is_suspended = accessors.is_suspended
 M.get_explorer = accessors.get_explorer
-M.get_result_base_lines = accessors.get_result_base_lines
-M.get_merge_base_lines = accessors.get_merge_base_lines
-M.get_result = accessors.get_result
-M.get_conflict_blocks = accessors.get_conflict_blocks
-M.get_conflict_files = accessors.get_conflict_files
-M.get_unsaved_conflict_files = accessors.get_unsaved_conflict_files
+
+-- Delegate conflict/merge sub-domain (getters)
+M.get_result_base_lines = conflict_state.get_result_base_lines
+M.get_merge_base_lines = conflict_state.get_merge_base_lines
+M.get_result = conflict_state.get_result
+M.get_conflict_blocks = conflict_state.get_conflict_blocks
+M.get_conflict_files = conflict_state.get_conflict_files
+M.get_unsaved_conflict_files = conflict_state.get_unsaved_conflict_files
 
 -- Delegate all accessors (setters)
 M.update_suspended = accessors.update_suspended
@@ -65,15 +70,21 @@ M.update_buffers = accessors.update_buffers
 M.update_git_root = accessors.update_git_root
 M.update_revisions = accessors.update_revisions
 M.set_explorer = accessors.set_explorer
-M.set_result = accessors.set_result
-M.set_result_base_lines = accessors.set_result_base_lines
-M.set_merge_base_lines = accessors.set_merge_base_lines
-M.set_conflict_blocks = accessors.set_conflict_blocks
-M.track_conflict_file = accessors.track_conflict_file
-M.confirm_close_with_unsaved = accessors.confirm_close_with_unsaved
-M.set_tab_keymap = accessors.set_tab_keymap
-M.clear_tab_keymaps = accessors.clear_tab_keymaps
-M.setup_auto_sync_on_file_switch = accessors.setup_auto_sync_on_file_switch
+
+-- Delegate conflict/merge sub-domain (setters)
+M.set_result = conflict_state.set_result
+M.set_result_base_lines = conflict_state.set_result_base_lines
+M.set_merge_base_lines = conflict_state.set_merge_base_lines
+M.set_conflict_blocks = conflict_state.set_conflict_blocks
+M.track_conflict_file = conflict_state.track_conflict_file
+M.confirm_close_with_unsaved = conflict_state.confirm_close_with_unsaved
+
+-- Delegate tab-wide keymap management
+M.set_tab_keymap = tab_keymaps.set_tab_keymap
+M.clear_tab_keymaps = tab_keymaps.clear_tab_keymaps
+
+-- Delegate file-switch auto-sync
+M.setup_auto_sync_on_file_switch = auto_sync.setup_auto_sync_on_file_switch
 
 -- Delegate to effects module (lazy-required to avoid circular deps)
 M.set_keymap = function(...)

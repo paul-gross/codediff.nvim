@@ -287,8 +287,8 @@ describe("keymap ledger – Phase 2 acceptance probe", function()
     local wrap_before = vim.wo[orig_win].wrap
 
     -- Invoke the TabLeave keymap-only path
-    local accessors = require("codediff.ui.lifecycle.accessors")
-    accessors.clear_tab_keymaps(tabpage)
+    local tab_keymaps = require("codediff.ui.lifecycle.tab_keymaps")
+    tab_keymaps.clear_tab_keymaps(tabpage)
 
     -- Keymaps should be gone
     local maps_after = find_codediff_maps_in(get_all_bufmaps_n(orig_bufnr))

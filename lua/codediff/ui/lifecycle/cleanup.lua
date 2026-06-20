@@ -1,7 +1,7 @@
 -- Cleanup and autocmd management for diff views
 local M = {}
 
-local accessors = require("codediff.ui.lifecycle.accessors")
+local tab_keymaps = require("codediff.ui.lifecycle.tab_keymaps")
 local session = require("codediff.ui.lifecycle.session")
 local state = require("codediff.ui.lifecycle.state")
 local welcome_window = require("codediff.ui.view.welcome_window")
@@ -47,7 +47,7 @@ local function cleanup_diff(tabpage)
   state.restore_buffer_state(diff.modified_bufnr, diff.modified_state)
 
   -- Remove tab-scoped keymaps from all tracked buffers
-  accessors.clear_tab_keymaps(tabpage)
+  tab_keymaps.clear_tab_keymaps(tabpage)
 
   -- Restore diff-owned window options (scrollbind, wrap, cursorline, list) via effects ledger.
   -- restore_window checks validity and epoch before writing, so closed windows are skipped.

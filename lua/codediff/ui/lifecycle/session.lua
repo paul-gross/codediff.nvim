@@ -4,7 +4,7 @@ local M = {}
 
 local config = require("codediff.config")
 local virtual_file = require("codediff.core.virtual_file")
-local accessors = require("codediff.ui.lifecycle.accessors")
+local tab_keymaps = require("codediff.ui.lifecycle.tab_keymaps")
 local welcome_window = require("codediff.ui.view.welcome_window")
 
 -- Monotonic counter for effects epochs; incremented once per create_session call.
@@ -274,7 +274,7 @@ function M.create_session(
     callback = function()
       local current_tab = vim.api.nvim_get_current_tabpage()
       if current_tab == tabpage then
-        accessors.clear_tab_keymaps(tabpage)
+        tab_keymaps.clear_tab_keymaps(tabpage)
         state.suspend_diff(tabpage)
       end
     end,
