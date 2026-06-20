@@ -98,7 +98,17 @@ end
 -- closes folds — navigation keys like zj/zk/]z/[z are excluded since they
 -- don't change fold state).
 local FOLD_KEYS = {
-  "zo", "zO", "zc", "zC", "za", "zA", "zv", "zx", "zX", "zM", "zR",
+  "zo",
+  "zO",
+  "zc",
+  "zC",
+  "za",
+  "zA",
+  "zv",
+  "zx",
+  "zX",
+  "zM",
+  "zR",
 }
 
 --- Install buffer-local keymap wraps that propagate fold-open/close actions
@@ -123,8 +133,7 @@ local function setup_fold_sync(session)
   }
 
   for _, pane in ipairs(panes) do
-    if pane.win and vim.api.nvim_win_is_valid(pane.win)
-        and pane.buf and vim.api.nvim_buf_is_valid(pane.buf) then
+    if pane.win and vim.api.nvim_win_is_valid(pane.win) and pane.buf and vim.api.nvim_buf_is_valid(pane.buf) then
       for _, key in ipairs(FOLD_KEYS) do
         vim.keymap.set("n", key, function()
           local count = vim.v.count > 0 and tostring(vim.v.count) or ""
@@ -150,8 +159,7 @@ local function setup_fold_sync(session)
           _syncing = true
           local ok, err = pcall(function()
             for _, other in ipairs(panes) do
-              if other.win ~= pane.win
-                  and other.win and vim.api.nvim_win_is_valid(other.win) then
+              if other.win ~= pane.win and other.win and vim.api.nvim_win_is_valid(other.win) then
                 local target = M.compute_corresponding_lnum(changes, pane.side, other.side, src_lnum)
                 target = math.max(1, math.min(target, vim.api.nvim_buf_line_count(other.buf)))
                 -- Save & restore cursor so the partner pane doesn't visibly jump.

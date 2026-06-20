@@ -547,8 +547,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
       if node_type == "group" or node_type == "directory" then
         return
       end
-      if explorer.current_file_path == node.data.path
-          and explorer.current_file_group == node.data.group then
+      if explorer.current_file_path == node.data.path and explorer.current_file_group == node.data.group then
         return
       end
       explorer.on_file_select(node.data)
