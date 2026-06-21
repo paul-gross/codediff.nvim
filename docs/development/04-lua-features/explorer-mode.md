@@ -184,12 +184,34 @@ Each spec accepts `root`, `base`, `target` (required) and `label` (optional;
 defaults to directory basename). Positional `{ root, base, target }` is also
 accepted. Invalid or non-git roots emit a per-repo warning without aborting.
 
+**`require("codediff").diff_repos_uncommitted(roots, opts)`** — the working-tree
+(dirty) counterpart:
+
+```lua
+require("codediff").diff_repos_uncommitted({
+  "~/project-a",
+  { root = "~/project-b", label = "backend" },
+})
+```
+
+Each root is a string path or `{ root, label? }` (positional `{ root }` also
+accepted). Instead of a `base..target` revision diff per repo, this fans out
+`git.get_status` across the roots and merges every repo's working-tree status —
+preserving all three buckets (staged / unstaged / conflicts; untracked lands in
+unstaged as `??`). Repos with no dirty files contribute nothing and are omitted;
+invalid roots emit a per-repo warning without aborting.
+
 ### Session shape
 
 Multi-repo sessions set `explorer.multi_repo = true` and `explorer.git_root = nil`
-(same as dir mode but distinguished by the `multi_repo` flag). Each file entry
-carries `git_root`, `base_revision`, `target_revision`, and `repo_label` from
-`core/multi_repo.lua`'s aggregation step.
+(same as dir mode but distinguished by the `multi_repo` flag). A
+`explorer.multi_repo_mode` discriminator (`"committed"` | `"uncommitted"`)
+records which aggregation built the session, so `refresh.lua` re-runs the
+matching one (`aggregate` vs `aggregate_uncommitted`) — auto-refresh stays
+BufEnter-only for multi-repo. Committed entries carry `git_root`,
+`base_revision`, `target_revision`, and `repo_label`; uncommitted entries carry
+`git_root` and `repo_label` only (the absence of revisions selects the
+working-tree path in `on_file_select`, mirroring a single-repo dirty session).
 
 ### Per-entry root resolution
 

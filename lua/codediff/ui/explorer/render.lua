@@ -193,6 +193,9 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
     -- is NOT dir mode. repos holds the {root,base,target,label} spec list.
     multi_repo = opts.multi_repo or false,
     repos = opts.repos,
+    -- "committed" (base..target revisions) vs "uncommitted" (working tree).
+    -- Selects which aggregation refresh re-runs for a multi-repo session.
+    multi_repo_mode = opts.multi_repo_mode,
     base_revision = base_revision,
     target_revision = target_revision,
     status_result = status_result, -- Store initial status result
@@ -363,6 +366,11 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
 
     -- Check if this exact diff is already being displayed
     -- Same file can have different diffs (staged vs HEAD, working vs staged)
+    -- Note: the `session.original_path == file_path` branch is gated on
+    -- session.git_root, which is nil for multi-repo sessions. That gate is what
+    -- prevents a same-relpath file in another repo from being falsely deduped as
+    -- "already showing". Do not start setting session.git_root on multi-repo
+    -- sessions without also scoping this comparison by the per-entry git_root.
     local session = lifecycle.get_session(tabpage)
     if session then
       local is_same_file = (session.modified_path == abs_path or session.modified_path == file_path or (session.git_root and session.original_path == file_path))
@@ -387,7 +395,9 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
             if current_status then
               local file_has_staged = false
               for _, sf in ipairs(current_status.staged or {}) do
-                if sf.path == file_path then
+                -- Multi-repo: scope by git_root so a same-relpath file in another
+                -- repo can't be mistaken for this entry's staged state.
+                if sf.path == file_path and (sf.git_root or root) == root then
                   file_has_staged = true
                   break
                 end
@@ -504,7 +514,10 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
         -- Use current status_result from explorer object
         local current_status = explorer.status_result or status_result
         for _, staged_file in ipairs(current_status.staged) do
-          if staged_file.path == file_path then
+          -- Multi-repo: scope by git_root so two repos sharing a relative path
+          -- resolve their staged base (:0) independently. Single-repo entries
+          -- carry no git_root, so this falls back to the session root.
+          if staged_file.path == file_path and (staged_file.git_root or root) == root then
             is_staged = true
             break
           end

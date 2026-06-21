@@ -37,6 +37,9 @@ function M.setup_explorer(tabpage, session_config, original_win, modified_win)
   if is_multi_repo then
     explorer_opts.multi_repo = true
     explorer_opts.repos = session_config.explorer_data.repos
+    -- "committed" (base..target revisions) vs "uncommitted" (working tree).
+    -- Drives mode-aware re-aggregation on refresh; defaults to committed.
+    explorer_opts.multi_repo_mode = session_config.explorer_data.multi_repo_mode or "committed"
   end
 
   local explorer_obj =

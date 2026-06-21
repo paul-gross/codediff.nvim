@@ -377,7 +377,7 @@ Primary entry point:
   require("codediff").setup({ ... })
 <
 
-Multi-repo diff:
+Multi-repo diff (committed revisions):
 >lua
   -- Open an explorer session aggregating N repos.
   -- specs: list of { root=, base=, target=, label=? }
@@ -385,6 +385,17 @@ Multi-repo diff:
   require("codediff").diff_repos({
     { root = "~/project-a", base = "main",  target = "HEAD" },
     { root = "~/project-b", base = "v1.0",  target = "HEAD", label = "backend" },
+  }, { layout = "inline" })  -- opts is optional
+<
+
+Multi-repo diff (uncommitted working tree):
+>lua
+  -- Open an explorer session aggregating the working-tree (dirty) state —
+  -- staged + unstaged + untracked + conflicts — across N repos. Repos with no
+  -- dirty files are omitted. Each root may be a string or { root=, label=? }.
+  require("codediff").diff_repos_uncommitted({
+    "~/project-a",
+    { root = "~/project-b", label = "backend" },
   }, { layout = "inline" })  -- opts is optional
 <
 

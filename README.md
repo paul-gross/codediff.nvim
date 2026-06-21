@@ -418,7 +418,9 @@ The explorer shows all changed files from all repos in one session. The `i` key 
 
 Per-file git operations (stage, unstage, restore, discard) route to each file's own repository. `stage_all` / `unstage_all` fan out across all repos.
 
-This mode is also available via the Lua API — see [Lua API](#lua-api) below.
+To review the **uncommitted working-tree state** (staged + unstaged + untracked + conflicts) across many repos in one session — before anything is committed — use the `diff_repos_uncommitted` Lua API (repos with no dirty files are skipped). The `:CodeDiff repos` command covers the committed revision-range case.
+
+Both modes are also available via the Lua API — see [Lua API](#lua-api) below.
 
 ### File History Mode
 
@@ -514,6 +516,14 @@ require("codediff").setup({
 require("codediff").diff_repos({
   { root = "~/project-a", base = "main", target = "HEAD" },
   { root = "~/project-b", base = "main", target = "HEAD", label = "backend" },
+}, { layout = "inline" })  -- opts is optional
+
+-- Multi-repo uncommitted diff: aggregate the working-tree (dirty) state —
+-- staged + unstaged + untracked + conflicts — across N repos in one session.
+-- Repos with no dirty files are omitted. Each root is a string or {root, label}.
+require("codediff").diff_repos_uncommitted({
+  "~/project-a",
+  { root = "~/project-b", label = "backend" },
 }, { layout = "inline" })  -- opts is optional
 
 -- Advanced usage - direct access to internal modules

@@ -99,6 +99,76 @@ function M.diff_repos(specs, opts)
         explorer_data = {
           status_result = merged_status_result,
           multi_repo = true,
+          multi_repo_mode = "committed",
+          repos = normalised,
+        },
+      }
+
+      view.create(session_config, "")
+    end)
+  end)
+end
+
+--- Open a multi-repo uncommitted (dirty) diff explorer session aggregating the
+-- working-tree changes (staged + unstaged + conflicts + untracked) across N repos.
+-- The dirty-state counterpart of M.diff_repos.
+-- @param roots table: list of repo roots. Each element may be a string path or a
+--   table { root=string, label=string? } (positional { root } also accepted).
+-- @param opts table?: optional options (e.g. { layout = "inline" })
+function M.diff_repos_uncommitted(roots, opts)
+  opts = opts or {}
+
+  if not roots or #roots == 0 then
+    vim.notify("codediff.diff_repos_uncommitted: roots list is empty", vim.log.levels.ERROR)
+    return
+  end
+
+  -- Normalise each root: accept a string or { root=, label= } / positional { root }.
+  local normalised = {}
+  for i, r in ipairs(roots) do
+    local root = (type(r) == "table") and (r.root or r[1]) or r
+    local label = (type(r) == "table") and r.label or nil
+
+    if not root or root == "" then
+      vim.notify(string.format("codediff.diff_repos_uncommitted: roots[%d] is missing a root path", i), vim.log.levels.ERROR)
+      return
+    end
+
+    -- Expand ~ and resolve relative paths to absolute paths
+    root = vim.fn.fnamemodify(vim.fn.expand(root), ":p")
+    -- Strip trailing slash so the label and comparisons work consistently
+    root = root:gsub("[/\\]$", "")
+
+    normalised[i] = { root = root, label = label }
+  end
+
+  local multi_repo = require("codediff.core.multi_repo")
+  local view = require("codediff.ui.view")
+
+  multi_repo.aggregate_uncommitted(normalised, function(merged_status_result, errors)
+    -- Surface per-repo errors as warnings (non-fatal; valid repos still contribute)
+    if errors and #errors > 0 then
+      vim.schedule(function()
+        for _, e in ipairs(errors) do
+          vim.notify("codediff multi-repo: " .. tostring(e.root) .. ": " .. e.error, vim.log.levels.WARN)
+        end
+      end)
+    end
+
+    vim.schedule(function()
+      ---@type SessionConfig
+      local session_config = {
+        mode = "explorer",
+        git_root = nil, -- nil + multi_repo=true distinguishes from dir mode
+        original_path = "",
+        modified_path = "",
+        original_revision = nil,
+        modified_revision = nil,
+        layout = opts.layout,
+        explorer_data = {
+          status_result = merged_status_result,
+          multi_repo = true,
+          multi_repo_mode = "uncommitted",
           repos = normalised,
         },
       }

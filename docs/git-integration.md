@@ -233,6 +233,23 @@ require("codediff").diff_repos({
 repository directory basename). The positional form `{ root, base, target }`
 is also accepted.
 
+### Uncommitted (working-tree) variant
+
+To aggregate the **dirty working-tree state** across repos instead of a
+committed revision range, use `diff_repos_uncommitted`:
+
+```lua
+require("codediff").diff_repos_uncommitted({
+  "~/project-a",
+  { root = "~/project-b", label = "backend" },
+}, { layout = "inline" })  -- opts is optional
+```
+
+Each root is a string or `{ root, label? }`. This merges every repo's staged,
+unstaged, untracked, and conflicted changes into one session (the multi-repo
+counterpart of `:CodeDiff` with no args). Repos with no dirty files are omitted;
+invalid roots warn without aborting. The explorer behaviour below is identical.
+
 ### Explorer behaviour
 
 Files from all repos appear in one session. The `i` key cycles view modes:

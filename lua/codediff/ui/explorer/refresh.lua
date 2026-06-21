@@ -363,18 +363,25 @@ function M.refresh(explorer)
   -- Use appropriate function based on mode
   if explorer.multi_repo then
     -- Multi-repo mode: fan out across all repos and merge into one status_result.
+    -- The aggregation must match the session's mode: committed sessions re-run the
+    -- base..target revision diff; uncommitted sessions re-run the working-tree status.
     local multi_repo = require("codediff.core.multi_repo")
-    multi_repo.aggregate(explorer.repos, function(merged_result, agg_errors)
+    local function on_aggregated(merged_result, agg_errors)
       if agg_errors and #agg_errors > 0 then
         -- Surface per-repo errors as warnings but continue with whatever succeeded.
         vim.schedule(function()
           for _, e in ipairs(agg_errors) do
-            vim.notify("codediff multi-repo: " .. e.root .. ": " .. e.error, vim.log.levels.WARN)
+            vim.notify("codediff multi-repo: " .. tostring(e.root) .. ": " .. e.error, vim.log.levels.WARN)
           end
         end)
       end
       process_result(nil, merged_result)
-    end)
+    end
+    if explorer.multi_repo_mode == "uncommitted" then
+      multi_repo.aggregate_uncommitted(explorer.repos, on_aggregated)
+    else
+      multi_repo.aggregate(explorer.repos, on_aggregated)
+    end
     return
   elseif not explorer.git_root then
     -- Dir mode: re-scan directories
