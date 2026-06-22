@@ -199,18 +199,24 @@ function M.toggle(tabpage)
   local session = lifecycle.get_session(tabpage)
 
   -- Close existing help window if open
-  if session and session._help_win and vim.api.nvim_win_is_valid(session._help_win) then
-    vim.api.nvim_win_close(session._help_win, true)
-    session._help_win = nil
+  local existing_help_win = lifecycle.get_help_win(tabpage)
+  if existing_help_win and vim.api.nvim_win_is_valid(existing_help_win) then
+    vim.api.nvim_win_close(existing_help_win, true)
+    lifecycle.set_help_win(tabpage, nil)
     return
   end
 
   setup_highlights()
 
   local keymaps = config.options.keymaps
-  local is_explorer = session and session.mode == "explorer"
-  local is_history = session and session.mode == "history"
-  local is_conflict = session and session.result_bufnr ~= nil
+  local sess_mode = session and lifecycle.get_mode(tabpage)
+  local is_explorer = sess_mode == "explorer"
+  local is_history = sess_mode == "history"
+  local sess_rb = session and (function()
+    local rb, _ = lifecycle.get_result(tabpage)
+    return rb
+  end)()
+  local is_conflict = sess_rb ~= nil
 
   local sections = build_sections(keymaps, is_explorer, is_history, is_conflict)
   local win_width = compute_width(sections)
@@ -245,9 +251,7 @@ function M.toggle(tabpage)
   vim.wo[win].winhighlight = "NormalFloat:Normal"
 
   -- Track window in session for toggle
-  if session then
-    session._help_win = win
-  end
+  lifecycle.set_help_win(tabpage, win)
 
   -- Close keymaps
   local show_help_key = keymaps.view.show_help or "g?"
@@ -256,9 +260,7 @@ function M.toggle(tabpage)
       if vim.api.nvim_win_is_valid(win) then
         vim.api.nvim_win_close(win, true)
       end
-      if session then
-        session._help_win = nil
-      end
+      lifecycle.set_help_win(tabpage, nil)
     end, { buffer = buf, nowait = true })
   end
 end

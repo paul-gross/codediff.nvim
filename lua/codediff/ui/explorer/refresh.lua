@@ -294,7 +294,12 @@ function M.refresh(explorer)
       if total_files == 0 then
         local lifecycle = require("codediff.ui.lifecycle")
         local session = lifecycle.get_session(explorer.tabpage)
-        local already_welcome = session and welcome.is_welcome_buffer(session.modified_bufnr)
+        local sess_mb
+        if session then
+          local _, mb = lifecycle.get_buffers(explorer.tabpage)
+          sess_mb = mb
+        end
+        local already_welcome = session and welcome.is_welcome_buffer(sess_mb)
         clear_current_file()
         if not already_welcome then
           show_welcome_page(explorer)

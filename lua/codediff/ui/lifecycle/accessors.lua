@@ -2,6 +2,18 @@
 -- paths, revisions, git_root, suspended, diff_result, changedtick, mtime,
 -- explorer, is_*_virtual). The conflict/merge, tab-keymap, and auto-sync
 -- sub-domains live in sibling modules behind the same lifecycle facade.
+--
+-- ENCAPSULATION CONTRACT
+-- The per-tabpage session table's field layout is private to the lifecycle
+-- modules. Every other module reaches session state through the behavioral
+-- operations exposed on the lifecycle facade, keyed by tabpage — never by
+-- reading raw `session.<field>`. Cohesive field clusters are exposed behind
+-- intent-named operations rather than per-field accessors:
+--   * git context  -> get_git_context (git_root + both revisions, read together)
+--   * change-track  -> mark_synced (changedtick + mtime watermark, written together)
+-- Remaining raw getters return single primitives a consumer provably needs for a
+-- Neovim API call (get_buffers, get_windows, get_paths) or a lone value with no
+-- paired sibling to cluster with (get_diff_result, is_single_pane, ...).
 local M = {}
 
 -- Eager require: effects.lua has no circular dependencies; loading it up front
@@ -133,6 +145,77 @@ function M.get_explorer(tabpage)
   return sess and sess.explorer
 end
 
+--- Get the cached diff result (the stored line-diff for the current render)
+function M.get_diff_result(tabpage)
+  local active_diffs = get_active_diffs()
+  local sess = active_diffs[tabpage]
+  return sess and sess.stored_diff_result
+end
+
+--- Whether the session is rendering in a single shared pane (inline / collapsed)
+function M.is_single_pane(tabpage)
+  local active_diffs = get_active_diffs()
+  local sess = active_diffs[tabpage]
+  return sess and sess.single_pane or false
+end
+
+--- Whether compact (changed-lines-only) mode is active for the session
+function M.is_compact_mode(tabpage)
+  local active_diffs = get_active_diffs()
+  local sess = active_diffs[tabpage]
+  return sess and sess.compact_mode or false
+end
+
+--- Find the tabpage whose diff session owns a window, and which side it is.
+--- @param winid number
+--- @return number|nil tabpage, string|nil side ("original" | "modified")
+function M.find_tabpage_by_window(winid)
+  local active_diffs = get_active_diffs()
+  for tabpage, sess in pairs(active_diffs) do
+    if sess.original_win == winid then
+      return tabpage, "original"
+    end
+    if sess.modified_win == winid then
+      return tabpage, "modified"
+    end
+  end
+  return nil, nil
+end
+
+--- Get the captured window-option profile for a side (welcome-window restore).
+function M.get_window_profile(tabpage, side)
+  local active_diffs = get_active_diffs()
+  local sess = active_diffs[tabpage]
+  return sess and sess.window_profiles and sess.window_profiles[side]
+end
+
+-- Per-feature transient state — niche scalars owned by a single feature module
+-- (cursor-landing handoff, the keymap-help float, the compact-mode fold
+-- snapshot). Exposed as thin get/set pairs because each is a lone value with no
+-- paired sibling to cluster behind a richer operation.
+
+--- Get the pending cursor-landing hint ("first" | "last" | nil) consumed by the
+--- next render to place the cursor after a cross-file hunk cycle.
+function M.get_pending_cursor_landing(tabpage)
+  local active_diffs = get_active_diffs()
+  local sess = active_diffs[tabpage]
+  return sess and sess.pending_cursor_landing
+end
+
+--- Get the keymap-help float window id (or nil).
+function M.get_help_win(tabpage)
+  local active_diffs = get_active_diffs()
+  local sess = active_diffs[tabpage]
+  return sess and sess._help_win
+end
+
+--- Get the compact-mode saved fold-state table (keyed by window id), or nil.
+function M.get_compact_fold_state(tabpage)
+  local active_diffs = get_active_diffs()
+  local sess = active_diffs[tabpage]
+  return sess and sess.compact_saved_fold_state
+end
+
 -- SETTERS (validated mutations)
 
 --- Update suspended state
@@ -171,29 +254,29 @@ function M.update_diff_result(tabpage, diff_lines)
   return true
 end
 
---- Update changedtick
-function M.update_changedtick(tabpage, original_tick, modified_tick)
+--- Record the change-tracking watermark for both sides in one paired operation.
+--- Replaces the former side-positional update_changedtick/update_mtime pair: the
+--- changedtick and mtime are the markers resume_diff compares against to decide
+--- whether a recompute is needed, so they are always written together.
+--- @param tabpage number
+--- @param ticks table Changedticks keyed by side: { original = number, modified = number }
+--- @param mtimes table|nil File mtimes keyed by side: { original = number?, modified = number? }.
+---   Pass nil to advance only the changedtick watermark and leave the recorded
+---   mtimes untouched (the live re-render path, where the on-disk file is unchanged).
+--- @return boolean success
+function M.mark_synced(tabpage, ticks, mtimes)
   local active_diffs = get_active_diffs()
   local sess = active_diffs[tabpage]
   if not sess then
     return false
   end
 
-  sess.changedtick.original = original_tick
-  sess.changedtick.modified = modified_tick
-  return true
-end
-
---- Update mtime
-function M.update_mtime(tabpage, original_mtime, modified_mtime)
-  local active_diffs = get_active_diffs()
-  local sess = active_diffs[tabpage]
-  if not sess then
-    return false
+  sess.changedtick.original = ticks.original
+  sess.changedtick.modified = ticks.modified
+  if mtimes then
+    sess.mtime.original = mtimes.original
+    sess.mtime.modified = mtimes.modified
   end
-
-  sess.mtime.original = original_mtime
-  sess.mtime.modified = modified_mtime
   return true
 end
 
@@ -290,6 +373,97 @@ function M.update_revisions(tabpage, original_revision, modified_revision)
 
   sess.original_revision = original_revision
   sess.modified_revision = modified_revision
+  return true
+end
+
+--- Update the diff window IDs (file switching / layout normalization)
+function M.set_windows(tabpage, original_win, modified_win)
+  local active_diffs = get_active_diffs()
+  local sess = active_diffs[tabpage]
+  if not sess then
+    return false
+  end
+
+  sess.original_win = original_win
+  sess.modified_win = modified_win
+  return true
+end
+
+--- Set the single-shared-pane flag (nil clears it)
+function M.set_single_pane(tabpage, value)
+  local active_diffs = get_active_diffs()
+  local sess = active_diffs[tabpage]
+  if not sess then
+    return false
+  end
+
+  sess.single_pane = value
+  return true
+end
+
+--- Set the compact-mode flag
+function M.set_compact_mode(tabpage, value)
+  local active_diffs = get_active_diffs()
+  local sess = active_diffs[tabpage]
+  if not sess then
+    return false
+  end
+
+  sess.compact_mode = value
+  return true
+end
+
+--- Capture a window-option profile for a side, but only the first time (the
+--- profile records the user's pre-diff window options so welcome-window restore
+--- can put them back). Subsequent calls keep the original snapshot.
+function M.capture_window_profile(tabpage, side, profile)
+  local active_diffs = get_active_diffs()
+  local sess = active_diffs[tabpage]
+  if not sess then
+    return false
+  end
+
+  sess.window_profiles = sess.window_profiles or {}
+  if not sess.window_profiles[side] then
+    sess.window_profiles[side] = profile
+  end
+  return true
+end
+
+--- Set the pending cursor-landing hint ("first" | "last" | nil).
+function M.set_pending_cursor_landing(tabpage, landing)
+  local active_diffs = get_active_diffs()
+  local sess = active_diffs[tabpage]
+  if not sess then
+    return false
+  end
+
+  sess.pending_cursor_landing = landing
+  return true
+end
+
+--- Set the keymap-help float window id (nil clears it).
+function M.set_help_win(tabpage, win)
+  local active_diffs = get_active_diffs()
+  local sess = active_diffs[tabpage]
+  if not sess then
+    return false
+  end
+
+  sess._help_win = win
+  return true
+end
+
+--- Set the compact-mode saved fold-state table (nil clears it). The returned
+--- table is stored by reference, so callers may index-assign into it in place.
+function M.set_compact_fold_state(tabpage, state)
+  local active_diffs = get_active_diffs()
+  local sess = active_diffs[tabpage]
+  if not sess then
+    return false
+  end
+
+  sess.compact_saved_fold_state = state
   return true
 end
 

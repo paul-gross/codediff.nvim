@@ -32,18 +32,18 @@ local function show_welcome_page(explorer)
     return false
   end
 
-  local mod_win = session.modified_win
+  local _, mod_win = lifecycle.get_windows(explorer.tabpage)
   if not mod_win or not vim.api.nvim_win_is_valid(mod_win) then
     return false
   end
 
-  if session.layout == "inline" then
+  if lifecycle.get_layout(explorer.tabpage) == "inline" then
     local welcome_buf = welcome.create_buffer(vim.api.nvim_win_get_width(mod_win), vim.api.nvim_win_get_height(mod_win))
     require("codediff.ui.view.inline_view").show_welcome(explorer.tabpage, welcome_buf)
     return true
   end
 
-  local orig_win = session.original_win
+  local orig_win, _ = lifecycle.get_windows(explorer.tabpage)
   local width = vim.api.nvim_win_get_width(mod_win)
   local height = vim.api.nvim_win_get_height(mod_win)
   if orig_win and vim.api.nvim_win_is_valid(orig_win) then
@@ -243,8 +243,11 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
 
       -- Check if already displaying same file
       local session = lifecycle.get_session(tabpage)
-      if not opts.force and session and session.original_path == original_path and session.modified_path == modified_path then
-        return
+      if not opts.force and session then
+        local cur_op, cur_mp = lifecycle.get_paths(tabpage)
+        if cur_op == original_path and cur_mp == modified_path then
+          return
+        end
       end
 
       vim.schedule(function()
@@ -268,7 +271,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
     if file_data.status == "??" then
       vim.schedule(function()
         local sess = lifecycle.get_session(tabpage)
-        if sess and sess.layout == "inline" then
+        if sess and lifecycle.get_layout(tabpage) == "inline" then
           require("codediff.ui.view.inline_view").show_single_file(tabpage, abs_path, {
             side = "modified",
           })
@@ -283,7 +286,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
     if file_data.status == "A" then
       vim.schedule(function()
         local sess = lifecycle.get_session(tabpage)
-        local is_inline = sess and sess.layout == "inline"
+        local is_inline = sess and lifecycle.get_layout(tabpage) == "inline"
 
         if base and target and target ~= "WORKING" then
           if is_inline then
@@ -326,7 +329,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
     if file_data.status == "D" then
       vim.schedule(function()
         local sess = lifecycle.get_session(tabpage)
-        local is_inline = sess and sess.layout == "inline"
+        local is_inline = sess and lifecycle.get_layout(tabpage) == "inline"
 
         -- Whenever the explorer is anchored to a base revision (single-rev
         -- like `:CodeDiff HEAD~5` OR revision-revision like `:CodeDiff A B`),
@@ -366,26 +369,32 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
 
     -- Check if this exact diff is already being displayed
     -- Same file can have different diffs (staged vs HEAD, working vs staged)
-    -- Note: the `session.original_path == file_path` branch is gated on
-    -- session.git_root, which is nil for multi-repo sessions. That gate is what
-    -- prevents a same-relpath file in another repo from being falsely deduped as
-    -- "already showing". Do not start setting session.git_root on multi-repo
+    -- Note: the original-path-equals-file_path branch is gated on the session's
+    -- git_root (from get_git_context), which is nil for multi-repo sessions. That
+    -- gate is what prevents a same-relpath file in another repo from being falsely
+    -- deduped as "already showing". Do not start recording a git_root on multi-repo
     -- sessions without also scoping this comparison by the per-entry git_root.
     local session = lifecycle.get_session(tabpage)
     if session then
-      local is_same_file = (session.modified_path == abs_path or session.modified_path == file_path or (session.git_root and session.original_path == file_path))
+      local sess_op, sess_mp = lifecycle.get_paths(tabpage)
+      local sess_ctx = lifecycle.get_git_context(tabpage)
+      local _, sess_rw = lifecycle.get_result(tabpage)
+      local sess_mr = sess_ctx and sess_ctx.modified_revision
+      local sess_or = sess_ctx and sess_ctx.original_revision
+      local sess_gr = sess_ctx and sess_ctx.git_root
+      local is_same_file = (sess_mp == abs_path or sess_mp == file_path or (sess_gr and sess_op == file_path))
 
       if is_same_file and not opts.force then
         -- Conflict mode: skip if already showing the same conflict file
         -- (revisions :2/:3 are mutable so the staged-base-change logic below
         --  would incorrectly force a re-render on every refresh cycle)
-        if group == "conflicts" and session.result_win and vim.api.nvim_win_is_valid(session.result_win) then
+        if group == "conflicts" and sess_rw and vim.api.nvim_win_is_valid(sess_rw) then
           return
         end
 
         -- Check if it's the same diff comparison
         local is_staged_diff = group == "staged"
-        local current_is_staged = session.modified_revision == ":0"
+        local current_is_staged = sess_mr == ":0"
 
         if is_staged_diff == current_is_staged then
           -- Same diff type — but also check if comparison base changed
@@ -402,7 +411,7 @@ function M.create(status_result, git_root, tabpage, width, base_revision, target
                   break
                 end
               end
-              local current_is_mutable = session.original_revision and session.original_revision:match("^:[0-3]$")
+              local current_is_mutable = sess_or and sess_or:match("^:[0-3]$")
               if file_has_staged ~= (current_is_mutable and true or false) then
                 -- Comparison base needs to change — don't skip
               else

@@ -64,13 +64,14 @@ local function compute_and_render_inline(
       vim.wo[modified_win].wrap = false
     end
     if auto_scroll_to_first_hunk and lines_diff.changes and #lines_diff.changes > 0 then
-      -- Honor session.pending_cursor_landing (cycle-hunks-across-files
+      -- Honor the pending cursor-landing hint (cycle-hunks-across-files
       -- backward direction sets it to "last"; see ui/view/navigation.lua).
       -- Look up the session via the window's tabpage because this code can
       -- run from a scheduled callback on a different tab.
-      local landing = session and session.pending_cursor_landing
-      if session then
-        session.pending_cursor_landing = nil
+      -- Reuse the lifecycle handle and tabpage resolved above for the effects ledger.
+      local landing = tabpage and lifecycle.get_pending_cursor_landing(tabpage) or nil
+      if tabpage then
+        lifecycle.set_pending_cursor_landing(tabpage, nil)
       end
 
       local target_line = landing == "last" and lines_diff.changes[#lines_diff.changes].modified.start_line or lines_diff.changes[1].modified.start_line
@@ -91,8 +92,7 @@ end
 -- Helper: setup keymaps (uses the shared setup_all_keymaps which is layout-aware)
 local function setup_keymaps(tabpage, orig_buf, mod_buf)
   local view_keymaps = require("codediff.ui.view.keymaps")
-  local session = lifecycle.get_session(tabpage)
-  local is_explorer = session and session.mode == "explorer"
+  local is_explorer = lifecycle.get_session(tabpage) and lifecycle.get_mode(tabpage) == "explorer"
   view_keymaps.setup_all_keymaps(tabpage, orig_buf, mod_buf, is_explorer)
 end
 
@@ -366,8 +366,8 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
     return false
   end
 
-  local old_modified_buf = session.modified_bufnr
-  local modified_win = session.modified_win
+  local _, old_modified_buf = lifecycle.get_buffers(tabpage)
+  local _, modified_win = lifecycle.get_windows(tabpage)
   if not modified_win or not vim.api.nvim_win_is_valid(modified_win) then
     return false
   end
@@ -448,7 +448,7 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
       lifecycle.update_git_root(tabpage, session_config.git_root)
       lifecycle.update_revisions(tabpage, session_config.original_revision, session_config.modified_revision)
       lifecycle.update_diff_result(tabpage, lines_diff)
-      lifecycle.update_changedtick(tabpage, vim.api.nvim_buf_get_changedtick(orig_buf), vim.api.nvim_buf_get_changedtick(mod_buf))
+      lifecycle.mark_synced(tabpage, { original = vim.api.nvim_buf_get_changedtick(orig_buf), modified = vim.api.nvim_buf_get_changedtick(mod_buf) })
       lifecycle.update_paths(tabpage, session_config.original_path or "", session_config.modified_path or "")
 
       auto_refresh.enable(orig_buf)
@@ -549,13 +549,11 @@ end
 -- ============================================================================
 
 function M.rerender(tabpage)
-  local session = lifecycle.get_session(tabpage)
-  if not session or session.layout ~= "inline" then
+  if not lifecycle.get_session(tabpage) or lifecycle.get_layout(tabpage) ~= "inline" then
     return
   end
 
-  local original_bufnr = session.original_bufnr
-  local modified_bufnr = session.modified_bufnr
+  local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
 
   if not vim.api.nvim_buf_is_valid(original_bufnr) or not vim.api.nvim_buf_is_valid(modified_bufnr) then
     return
@@ -645,19 +643,21 @@ function M.show_single_file(tabpage, file_path, opts)
   local side = opts.side or "modified"
 
   lifecycle.update_layout(tabpage, "inline")
-  local mod_win = session.modified_win
+  local _, mod_win = lifecycle.get_windows(tabpage)
   if not mod_win or not vim.api.nvim_win_is_valid(mod_win) then
     return
   end
 
+  local _, cur_modified_bufnr = lifecycle.get_buffers(tabpage)
+
   -- Clear old inline decorations
-  if session.modified_bufnr and vim.api.nvim_buf_is_valid(session.modified_bufnr) then
-    inline.clear(session.modified_bufnr)
+  if cur_modified_bufnr and vim.api.nvim_buf_is_valid(cur_modified_bufnr) then
+    inline.clear(cur_modified_bufnr)
   end
 
   -- Disable old auto-refresh
-  if session.modified_bufnr and vim.api.nvim_buf_is_valid(session.modified_bufnr) then
-    auto_refresh.disable(session.modified_bufnr)
+  if cur_modified_bufnr and vim.api.nvim_buf_is_valid(cur_modified_bufnr) then
+    auto_refresh.disable(cur_modified_bufnr)
   end
 
   -- Load the file
@@ -700,7 +700,7 @@ function M.show_single_file(tabpage, file_path, opts)
   lifecycle.update_diff_result(tabpage, { changes = {}, moves = {} })
 
   local view_keymaps = require("codediff.ui.view.keymaps")
-  view_keymaps.setup_all_keymaps(tabpage, orig_bufnr, mod_bufnr, session.mode == "explorer")
+  view_keymaps.setup_all_keymaps(tabpage, orig_bufnr, mod_bufnr, lifecycle.get_mode(tabpage) == "explorer")
 
   -- Apply whole-file highlights when the caller signals a fully deleted/added file.
   -- Untracked files (whole_file_side = nil) are left unhighlighted.
@@ -748,14 +748,15 @@ function M.show_welcome(tabpage, load_bufnr)
   end
 
   lifecycle.update_layout(tabpage, "inline")
-  local mod_win = session.modified_win
+  local _, mod_win = lifecycle.get_windows(tabpage)
   if not mod_win or not vim.api.nvim_win_is_valid(mod_win) then
     return
   end
 
-  if session.modified_bufnr and vim.api.nvim_buf_is_valid(session.modified_bufnr) then
-    inline.clear(session.modified_bufnr)
-    auto_refresh.disable(session.modified_bufnr)
+  local _, cur_modified_bufnr = lifecycle.get_buffers(tabpage)
+  if cur_modified_bufnr and vim.api.nvim_buf_is_valid(cur_modified_bufnr) then
+    inline.clear(cur_modified_bufnr)
+    auto_refresh.disable(cur_modified_bufnr)
   end
 
   vim.api.nvim_win_set_buf(mod_win, load_bufnr)
@@ -770,7 +771,7 @@ function M.show_welcome(tabpage, load_bufnr)
   lifecycle.update_diff_result(tabpage, { changes = {}, moves = {} })
 
   local view_keymaps = require("codediff.ui.view.keymaps")
-  view_keymaps.setup_all_keymaps(tabpage, empty_buf, load_bufnr, session.mode == "explorer")
+  view_keymaps.setup_all_keymaps(tabpage, empty_buf, load_bufnr, lifecycle.get_mode(tabpage) == "explorer")
   layout.arrange(tabpage)
   welcome_window.sync_later(mod_win)
 end

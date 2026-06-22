@@ -36,30 +36,23 @@ local function apply_opts(winid, opts)
   end
 end
 
-local function get_session_for_window(winid)
-  local active_diffs = require("codediff.ui.lifecycle.session").get_active_diffs()
-  for _, sess in pairs(active_diffs) do
-    if sess.original_win == winid then
-      return sess, "original"
-    end
-    if sess.modified_win == winid then
-      return sess, "modified"
-    end
-  end
-  return nil, nil
+-- Lazy require: session.lua (a lifecycle module) requires this file at load time,
+-- so reaching back into lifecycle at the top level would form a require cycle.
+local function lifecycle()
+  return require("codediff.ui.lifecycle")
 end
 
-function M.capture_session_profiles(sess)
-  if not sess then
+function M.capture_session_profiles(tabpage)
+  if not tabpage then
     return
   end
 
-  sess.window_profiles = sess.window_profiles or {}
-  if is_valid_window(sess.original_win) and not sess.window_profiles.original then
-    sess.window_profiles.original = read_window_opts(sess.original_win)
+  local original_win, modified_win = lifecycle().get_windows(tabpage)
+  if is_valid_window(original_win) then
+    lifecycle().capture_window_profile(tabpage, "original", read_window_opts(original_win))
   end
-  if is_valid_window(sess.modified_win) and not sess.window_profiles.modified then
-    sess.window_profiles.modified = read_window_opts(sess.modified_win)
+  if is_valid_window(modified_win) then
+    lifecycle().capture_window_profile(tabpage, "modified", read_window_opts(modified_win))
   end
 end
 
@@ -76,13 +69,13 @@ function M.apply_normal(winid)
     return
   end
 
-  local sess, side = get_session_for_window(winid)
-  if not sess or not side then
+  local tabpage, side = lifecycle().find_tabpage_by_window(winid)
+  if not tabpage or not side then
     return
   end
 
-  M.capture_session_profiles(sess)
-  local normal_opts = sess.window_profiles and sess.window_profiles[side]
+  M.capture_session_profiles(tabpage)
+  local normal_opts = lifecycle().get_window_profile(tabpage, side)
   if not normal_opts then
     return
   end

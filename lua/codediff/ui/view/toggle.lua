@@ -10,18 +10,16 @@ local function normalize_inline_layout(tabpage)
   end
 
   lifecycle.update_layout(tabpage, "inline")
-  session.single_pane = nil
+  lifecycle.set_single_pane(tabpage, nil)
 
-  local original_win = session.original_win
-  local modified_win = session.modified_win
+  local original_win, modified_win = lifecycle.get_windows(tabpage)
   local keep_win = (modified_win and vim.api.nvim_win_is_valid(modified_win) and modified_win) or (original_win and vim.api.nvim_win_is_valid(original_win) and original_win)
 
   if not keep_win then
     return false
   end
 
-  session.original_win = keep_win
-  session.modified_win = keep_win
+  lifecycle.set_windows(tabpage, keep_win, keep_win)
 
   local close_win = nil
   if original_win and modified_win and original_win ~= modified_win then
@@ -42,17 +40,16 @@ local function normalize_side_by_side_layout(tabpage)
     return false
   end
 
-  local current_win = (session.modified_win and vim.api.nvim_win_is_valid(session.modified_win) and session.modified_win)
-    or (session.original_win and vim.api.nvim_win_is_valid(session.original_win) and session.original_win)
+  local original_win, modified_win = lifecycle.get_windows(tabpage)
+  local current_win = (modified_win and vim.api.nvim_win_is_valid(modified_win) and modified_win) or (original_win and vim.api.nvim_win_is_valid(original_win) and original_win)
 
   if not current_win then
     return false
   end
 
   lifecycle.update_layout(tabpage, "side-by-side")
-  session.single_pane = true
-  session.original_win = nil
-  session.modified_win = current_win
+  lifecycle.set_single_pane(tabpage, true)
+  lifecycle.set_windows(tabpage, nil, current_win)
   return true
 end
 
@@ -65,24 +62,28 @@ local function rerender_current_file(tabpage)
     return false
   end
 
-  if session.mode == "explorer" then
+  local mode = lifecycle.get_mode(tabpage)
+
+  if mode == "explorer" then
     local explorer = lifecycle.get_explorer(tabpage)
     return explorer and require("codediff.ui.explorer").rerender_current(explorer) or false
   end
 
-  if session.mode == "history" then
+  if mode == "history" then
     local history = lifecycle.get_explorer(tabpage)
     return history and require("codediff.ui.history").rerender_current(history) or false
   end
 
   -- Standalone mode: rebuild from session fields
+  local ctx = lifecycle.get_git_context(tabpage)
+  local original_path, modified_path = lifecycle.get_paths(tabpage)
   local session_config = {
-    mode = session.mode,
-    git_root = session.git_root,
-    original_path = session.original_path,
-    modified_path = session.modified_path,
-    original_revision = session.original_revision,
-    modified_revision = session.modified_revision,
+    mode = mode,
+    git_root = ctx and ctx.git_root,
+    original_path = original_path,
+    modified_path = modified_path,
+    original_revision = ctx and ctx.original_revision,
+    modified_revision = ctx and ctx.modified_revision,
   }
   return require("codediff.ui.view").update(tabpage, session_config, false)
 end
@@ -94,18 +95,19 @@ function M.toggle(tabpage)
     return false
   end
 
-  if session.result_win and vim.api.nvim_win_is_valid(session.result_win) then
+  local _, result_win = lifecycle.get_result(tabpage)
+  if result_win and vim.api.nvim_win_is_valid(result_win) then
     vim.notify("Cannot toggle layout in conflict mode", vim.log.levels.WARN)
     return false
   end
 
-  local target_layout = session.layout == "inline" and "side-by-side" or "inline"
+  local current_layout = lifecycle.get_layout(tabpage)
+  local target_layout = current_layout == "inline" and "side-by-side" or "inline"
   local normalize = target_layout == "inline" and normalize_inline_layout or normalize_side_by_side_layout
-  local previous_layout = session.layout
 
   -- Disable compact mode before changing layout (window IDs will change)
   local compact = require("codediff.ui.view.compact")
-  local was_compact = session.compact_mode
+  local was_compact = lifecycle.is_compact_mode(tabpage)
   if was_compact then
     compact.disable(tabpage)
   end

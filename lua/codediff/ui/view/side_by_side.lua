@@ -486,7 +486,7 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
   end
 
   -- Restore second window if returning from single-pane mode
-  if session.single_pane then
+  if lifecycle.is_single_pane(tabpage) then
     local split_cmd = config.options.diff.original_position == "right" and "leftabove vsplit" or "rightbelow vsplit"
 
     if not original_win or not vim.api.nvim_win_is_valid(original_win) then
@@ -495,18 +495,18 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
       vim.cmd(config.options.diff.original_position == "right" and "rightbelow vsplit" or "leftabove vsplit")
       original_win = vim.api.nvim_get_current_win()
       vim.w[original_win].codediff_restore = 1
-      session.original_win = original_win
+      lifecycle.set_windows(tabpage, original_win, modified_win)
     elseif not modified_win or not vim.api.nvim_win_is_valid(modified_win) then
       -- Modified was closed (deleted file) — recreate it to the right of original
       vim.api.nvim_set_current_win(original_win)
       vim.cmd(split_cmd)
       modified_win = vim.api.nvim_get_current_win()
       vim.w[modified_win].codediff_restore = 1
-      session.modified_win = modified_win
+      lifecycle.set_windows(tabpage, original_win, modified_win)
     end
 
     -- Clear single_pane AFTER new window has codediff_restore set
-    session.single_pane = nil
+    lifecycle.set_single_pane(tabpage, nil)
     layout.arrange(tabpage)
   end
 
@@ -570,8 +570,8 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
             lifecycle.update_git_root(tabpage, session_config.git_root)
             lifecycle.update_revisions(tabpage, session_config.original_revision, session_config.modified_revision)
             lifecycle.update_diff_result(tabpage, conflict_diffs.base_to_modified_diff)
-            lifecycle.update_changedtick(tabpage, vim.api.nvim_buf_get_changedtick(original_info.bufnr), vim.api.nvim_buf_get_changedtick(modified_info.bufnr))
-            local is_explorer_mode = session.mode == "explorer"
+            lifecycle.mark_synced(tabpage, { original = vim.api.nvim_buf_get_changedtick(original_info.bufnr), modified = vim.api.nvim_buf_get_changedtick(modified_info.bufnr) })
+            local is_explorer_mode = lifecycle.get_mode(tabpage) == "explorer"
             local success = setup_conflict_result_window(tabpage, session_config, original_win, modified_win, base_lines, conflict_diffs, true)
             if success then
               setup_all_keymaps(tabpage, original_info.bufnr, modified_info.bufnr, is_explorer_mode)
@@ -606,10 +606,10 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
         lifecycle.update_git_root(tabpage, session_config.git_root)
         lifecycle.update_revisions(tabpage, session_config.original_revision, session_config.modified_revision)
         lifecycle.update_diff_result(tabpage, lines_diff)
-        lifecycle.update_changedtick(tabpage, vim.api.nvim_buf_get_changedtick(original_info.bufnr), vim.api.nvim_buf_get_changedtick(modified_info.bufnr))
+        lifecycle.mark_synced(tabpage, { original = vim.api.nvim_buf_get_changedtick(original_info.bufnr), modified = vim.api.nvim_buf_get_changedtick(modified_info.bufnr) })
         setup_auto_refresh(original_info.bufnr, modified_info.bufnr, original_is_virtual, modified_is_virtual)
 
-        local is_explorer_mode = session.mode == "explorer"
+        local is_explorer_mode = lifecycle.get_mode(tabpage) == "explorer"
         setup_all_keymaps(tabpage, original_info.bufnr, modified_info.bufnr, is_explorer_mode)
 
         -- Restore focus to the window that was active before update
@@ -828,7 +828,7 @@ local function show_single_file(tabpage, opts)
   end
 
   -- Mark single-pane BEFORE closing window (prevents cleanup trigger)
-  session.single_pane = true
+  lifecycle.set_single_pane(tabpage, true)
 
   -- Close the unused window
   local keep_win, close_win
@@ -858,11 +858,9 @@ local function show_single_file(tabpage, opts)
     welcome_window.sync(keep_win)
 
     if opts.keep == "original" then
-      session.original_win = keep_win
-      session.modified_win = nil
+      lifecycle.set_windows(tabpage, keep_win, nil)
     else
-      session.original_win = nil
-      session.modified_win = keep_win
+      lifecycle.set_windows(tabpage, nil, keep_win)
     end
 
     -- Create a scratch buffer as placeholder for the empty side
@@ -878,7 +876,7 @@ local function show_single_file(tabpage, opts)
     lifecycle.update_diff_result(tabpage, { changes = {}, moves = {} })
 
     local view_keymaps = require("codediff.ui.view.keymaps")
-    view_keymaps.setup_all_keymaps(tabpage, orig_bufnr, mod_bufnr, session.mode == "explorer")
+    view_keymaps.setup_all_keymaps(tabpage, orig_bufnr, mod_bufnr, lifecycle.get_mode(tabpage) == "explorer")
 
     -- Clear the updating flag now that update_buffers + setup_all_keymaps are done.
     local s = lifecycle.get_session(tabpage)

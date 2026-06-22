@@ -204,7 +204,7 @@ function M.create_session(
     updating = false,
   }
 
-  welcome_window.capture_session_profiles(active_diffs[tabpage])
+  welcome_window.capture_session_profiles(tabpage)
 
   -- Mark windows with restore flag
   vim.w[original_win].codediff_restore = 1

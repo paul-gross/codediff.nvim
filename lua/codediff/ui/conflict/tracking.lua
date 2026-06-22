@@ -2,8 +2,6 @@
 -- Handles tracking state, checking if blocks are active/resolved
 local M = {}
 
-local lifecycle = require("codediff.ui.lifecycle")
-
 local tracking_ns = vim.api.nvim_create_namespace("codediff-conflict-tracking")
 local result_signs_ns = vim.api.nvim_create_namespace("codediff-result-signs")
 
@@ -39,16 +37,19 @@ end
 --- compute_auto_merged_result(); for unresolved conflicts that seed is the
 --- BASE slice. A block is "active" when the result buffer at the tracked
 --- range still equals that seed slice — i.e. the user hasn't resolved it yet.
---- @param session table The diff session
+--- @param tabpage number The tabpage ID
 --- @param block table The conflict block
 --- @return boolean is_active
-function M.is_block_active(session, block)
+function M.is_block_active(tabpage, block)
+  local lifecycle = require("codediff.ui.lifecycle")
   if not block.extmark_id then
     return true
   end -- Default to active if no tracking
 
+  local result_bufnr = lifecycle.get_result(tabpage)
+
   -- 1. Get current content from buffer via Extmark
-  local mark = vim.api.nvim_buf_get_extmark_by_id(session.result_bufnr, tracking_ns, block.extmark_id, { details = true })
+  local mark = vim.api.nvim_buf_get_extmark_by_id(result_bufnr, tracking_ns, block.extmark_id, { details = true })
   if not mark or #mark == 0 then
     return true
   end -- Default to active if extmark invalid
@@ -59,13 +60,13 @@ function M.is_block_active(session, block)
   local start_row = mark[1]
   local end_row = mark[3].end_row
 
-  local current_lines = vim.api.nvim_buf_get_lines(session.result_bufnr, start_row, end_row, false)
+  local current_lines = vim.api.nvim_buf_get_lines(result_bufnr, start_row, end_row, false)
 
   -- 2. Get expected seed content from the auto-merged Result content stored
-  -- in session.result_base_lines. result_range marks where this block's BASE
+  -- in result_base_lines. result_range marks where this block's BASE
   -- slice was placed in the auto-merged seed. Fall back to base_range against
   -- a pure-BASE seed if result_range is absent (legacy paths).
-  local seed_lines = session.result_base_lines
+  local seed_lines = lifecycle.get_result_base_lines(tabpage)
   if not seed_lines then
     return true
   end
@@ -91,41 +92,45 @@ function M.is_block_active(session, block)
 end
 
 --- Determine which side was accepted for a resolved conflict block
---- @param session table The diff session
+--- @param tabpage number The tabpage ID
 --- @param block table The conflict block
 --- @return string|nil "incoming", "current", "both", or nil if unresolved/unknown
-function M.get_accepted_side(session, block)
+function M.get_accepted_side(tabpage, block)
+  local lifecycle = require("codediff.ui.lifecycle")
   if not block.extmark_id then
     return nil
   end
-  if M.is_block_active(session, block) then
+  if M.is_block_active(tabpage, block) then
     return nil
   end -- Still unresolved
 
+  local result_bufnr = lifecycle.get_result(tabpage)
+  local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
+
   -- Get current content from result buffer
-  local mark = vim.api.nvim_buf_get_extmark_by_id(session.result_bufnr, tracking_ns, block.extmark_id, { details = true })
+  local mark = vim.api.nvim_buf_get_extmark_by_id(result_bufnr, tracking_ns, block.extmark_id, { details = true })
   if not mark or #mark < 3 then
     return nil
   end
 
   local start_row = mark[1]
   local end_row = mark[3].end_row
-  local current_lines = vim.api.nvim_buf_get_lines(session.result_bufnr, start_row, end_row, false)
+  local current_lines = vim.api.nvim_buf_get_lines(result_bufnr, start_row, end_row, false)
 
   -- Get incoming (left) content
   local incoming_lines = {}
-  if session.original_bufnr and vim.api.nvim_buf_is_valid(session.original_bufnr) then
+  if original_bufnr and vim.api.nvim_buf_is_valid(original_bufnr) then
     local left_start = block.output1_range.start_line
     local left_end = block.output1_range.end_line
-    incoming_lines = vim.api.nvim_buf_get_lines(session.original_bufnr, left_start - 1, left_end - 1, false)
+    incoming_lines = vim.api.nvim_buf_get_lines(original_bufnr, left_start - 1, left_end - 1, false)
   end
 
   -- Get current (right) content
   local current_side_lines = {}
-  if session.modified_bufnr and vim.api.nvim_buf_is_valid(session.modified_bufnr) then
+  if modified_bufnr and vim.api.nvim_buf_is_valid(modified_bufnr) then
     local right_start = block.output2_range.start_line
     local right_end = block.output2_range.end_line
-    current_side_lines = vim.api.nvim_buf_get_lines(session.modified_bufnr, right_start - 1, right_end - 1, false)
+    current_side_lines = vim.api.nvim_buf_get_lines(modified_bufnr, right_start - 1, right_end - 1, false)
   end
 
   -- Helper to compare line arrays
@@ -169,13 +174,15 @@ function M.get_accepted_side(session, block)
 end
 
 --- Find which conflict block the cursor is in
---- @param session table The diff session
+--- @param tabpage number The tabpage ID
 --- @param cursor_line number 1-based line number
 --- @param side string "left" or "right"
 --- @param allow_resolved boolean? If true, return block even if resolved (for discard/reset)
 --- @return table|nil The conflict block containing the cursor
-function M.find_conflict_at_cursor(session, cursor_line, side, allow_resolved)
-  local blocks = session.conflict_blocks
+function M.find_conflict_at_cursor(tabpage, cursor_line, side, allow_resolved)
+  local lifecycle = require("codediff.ui.lifecycle")
+  local blocks = lifecycle.get_conflict_blocks(tabpage)
+  local result_bufnr = lifecycle.get_result(tabpage)
   local range_key = side == "left" and "output1_range" or "output2_range"
 
   for _, block in ipairs(blocks) do
@@ -184,14 +191,14 @@ function M.find_conflict_at_cursor(session, cursor_line, side, allow_resolved)
     if allow_resolved then
       -- Just check if extmark exists (valid block tracking)
       if block.extmark_id then
-        local mark = vim.api.nvim_buf_get_extmark_by_id(session.result_bufnr, tracking_ns, block.extmark_id, {})
+        local mark = vim.api.nvim_buf_get_extmark_by_id(result_bufnr, tracking_ns, block.extmark_id, {})
         if mark and #mark > 0 then
           is_match = true
         end
       end
     else
       -- Check strictly if active (content matches base)
-      if M.is_block_active(session, block) then
+      if M.is_block_active(tabpage, block) then
         is_match = true
       end
     end
@@ -207,18 +214,21 @@ function M.find_conflict_at_cursor(session, cursor_line, side, allow_resolved)
 end
 
 --- Find conflict block at cursor position in result buffer (using extmarks)
---- @param session table The diff session
+--- @param tabpage number The tabpage ID
 --- @param cursor_line number 1-based line number in result buffer
 --- @return table|nil The conflict block containing the cursor
-function M.find_conflict_at_cursor_in_result(session, cursor_line)
-  local blocks = session.conflict_blocks
+function M.find_conflict_at_cursor_in_result(tabpage, cursor_line)
+  local lifecycle = require("codediff.ui.lifecycle")
+  local blocks = lifecycle.get_conflict_blocks(tabpage)
   if not blocks then
     return nil
   end
 
+  local result_bufnr = lifecycle.get_result(tabpage)
+
   for _, block in ipairs(blocks) do
     if block.extmark_id then
-      local mark = vim.api.nvim_buf_get_extmark_by_id(session.result_bufnr, tracking_ns, block.extmark_id, { details = true })
+      local mark = vim.api.nvim_buf_get_extmark_by_id(result_bufnr, tracking_ns, block.extmark_id, { details = true })
       if mark and #mark > 0 then
         local start_row = mark[1] + 1 -- Convert to 1-based
         local end_row = mark[3] and mark[3].end_row and (mark[3].end_row + 1) or start_row
@@ -226,7 +236,7 @@ function M.find_conflict_at_cursor_in_result(session, cursor_line)
         -- Check if cursor is within this block's range in result buffer
         if cursor_line >= start_row and cursor_line <= end_row then
           -- Also check if block is still active (not resolved)
-          if M.is_block_active(session, block) then
+          if M.is_block_active(tabpage, block) then
             return block
           end
         end
@@ -286,25 +296,29 @@ function M.initialize_tracking(result_bufnr, conflict_blocks)
 end
 
 --- Get the start line of a block in the current buffer
---- @param session table Session object
+--- @param tabpage number The tabpage ID
 --- @param block table Conflict block
 --- @param bufnr number Current buffer number
 --- @return number|nil start_line 1-based
-function M.get_block_start_line(session, block, bufnr)
-  if bufnr == session.result_bufnr then
+function M.get_block_start_line(tabpage, block, bufnr)
+  local lifecycle = require("codediff.ui.lifecycle")
+  local result_bufnr = lifecycle.get_result(tabpage)
+  local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
+
+  if bufnr == result_bufnr then
     -- Result buffer: use extmark
     if block.extmark_id then
-      local mark = vim.api.nvim_buf_get_extmark_by_id(session.result_bufnr, tracking_ns, block.extmark_id, {})
+      local mark = vim.api.nvim_buf_get_extmark_by_id(result_bufnr, tracking_ns, block.extmark_id, {})
       if mark and #mark > 0 then
         return mark[1] + 1 -- Extmarks are 0-based, return 1-based
       end
     end
-  elseif bufnr == session.original_bufnr then
+  elseif bufnr == original_bufnr then
     -- Incoming (left): use output1_range
     if block.output1_range then
       return block.output1_range.start_line
     end
-  elseif bufnr == session.modified_bufnr then
+  elseif bufnr == modified_bufnr then
     -- Current (right): use output2_range
     if block.output2_range then
       return block.output2_range.start_line

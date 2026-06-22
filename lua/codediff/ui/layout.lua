@@ -14,17 +14,16 @@ function M.arrange(tabpage)
     return
   end
 
-  local original_win = session.original_win
-  local modified_win = session.modified_win
-  local result_win = session.result_win
-  local panel = session.explorer -- explorer or history panel object
+  local original_win, modified_win = lifecycle.get_windows(tabpage)
+  local _, result_win = lifecycle.get_result(tabpage)
+  local panel = lifecycle.get_explorer(tabpage) -- explorer or history panel object
 
   -- Panel state
   local panel_win = panel and panel.winid
   local panel_visible = panel_win and vim.api.nvim_win_is_valid(panel_win) and not panel.is_hidden
 
   -- Determine panel config (explorer or history)
-  local mode = session.mode
+  local mode = lifecycle.get_mode(tabpage)
   local panel_config
   if mode == "history" then
     panel_config = config.options.history or {}
@@ -44,10 +43,10 @@ function M.arrange(tabpage)
 
   local orig_valid = original_win and vim.api.nvim_win_is_valid(original_win)
   local mod_valid = modified_win and vim.api.nvim_win_is_valid(modified_win)
-  local is_single_diff_window = session.layout == "inline" or original_win == modified_win
+  local is_single_diff_window = lifecycle.get_layout(tabpage) == "inline" or original_win == modified_win
 
   -- Single-pane mode: one diff window takes all available space
-  if session.single_pane or is_single_diff_window or (orig_valid ~= mod_valid) then
+  if lifecycle.is_single_pane(tabpage) or is_single_diff_window or (orig_valid ~= mod_valid) then
     local sole_win = orig_valid and original_win or (mod_valid and modified_win or nil)
     if sole_win then
       if panel_visible then

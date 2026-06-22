@@ -128,16 +128,17 @@ function M.compute_and_render(
     -- ui/view/navigation.lua next_hunk/prev_hunk convention).
     local orig_cursor, mod_cursor
     if auto_scroll_to_first_hunk and #lines_diff.changes > 0 then
-      -- Honor session.pending_cursor_landing (set by the cycle-hunks-across-
+      -- Honor the pending cursor-landing hint (set by the cycle-hunks-across-
       -- files navigation path; see ui/view/navigation.lua). It's a one-shot
       -- intent — read and clear here so the next render doesn't reapply it.
       -- Look up the session by the modified window's tabpage rather than
       -- find_tabpage_by_buffer (the session's bufnrs are updated AFTER
       -- this render in the file-switch path) or current tabpage (this code
       -- can run from a scheduled callback on a different tab).
-      local landing = session and session.pending_cursor_landing
-      if session then
-        session.pending_cursor_landing = nil
+      -- Reuse the lifecycle handle and tabpage resolved above for the effects ledger.
+      local landing = tabpage and lifecycle.get_pending_cursor_landing(tabpage) or nil
+      if tabpage then
+        lifecycle.set_pending_cursor_landing(tabpage, nil)
       end
 
       if line_range then

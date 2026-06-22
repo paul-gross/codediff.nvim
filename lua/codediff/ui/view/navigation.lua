@@ -7,8 +7,8 @@ local config = require("codediff.config")
 -- Hop to the next/previous file in the explorer's list.
 --
 -- The cursor will land on the first or last hunk of the new file once the
--- file finishes loading; we communicate that wish by stashing
--- `session.pending_cursor_landing` on the current session, which the
+-- file finishes loading; we communicate that wish via the lifecycle's
+-- pending cursor-landing hint (set_pending_cursor_landing), which the
 -- diff-render completion path in view/render.lua reads and clears
 -- synchronously (no autocmds, no async tracking needed here).
 --
@@ -21,12 +21,9 @@ local function hop_to_adjacent_file(direction)
     return false
   end
 
-  local session = lifecycle.get_session(tabpage)
-  if session then
-    -- "next" → land on first hunk of the next file (the natural forward walk)
-    -- "prev" → land on last hunk of the previous file (the natural backward walk)
-    session.pending_cursor_landing = direction == "next" and "first" or "last"
-  end
+  -- "next" → land on first hunk of the next file (the natural forward walk)
+  -- "prev" → land on last hunk of the previous file (the natural backward walk)
+  lifecycle.set_pending_cursor_landing(tabpage, direction == "next" and "first" or "last")
 
   if direction == "next" then
     return M.next_file()
@@ -40,23 +37,23 @@ end
 function M.next_hunk()
   local tabpage = vim.api.nvim_get_current_tabpage()
   local session = lifecycle.get_session(tabpage)
-  if not session or not session.stored_diff_result then
+  local diff_result = lifecycle.get_diff_result(tabpage)
+  if not session or not diff_result then
     return false
   end
 
-  local diff_result = session.stored_diff_result
   if not diff_result.changes or #diff_result.changes == 0 then
     return false
   end
 
   local current_buf = vim.api.nvim_get_current_buf()
-  local original_bufnr = session.original_bufnr
-  local modified_bufnr = session.modified_bufnr
-  local is_inline = session.layout == "inline"
+  local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
+  local is_inline = lifecycle.get_layout(tabpage) == "inline"
+  local result_bufnr = lifecycle.get_result(tabpage)
 
   local is_original = current_buf == original_bufnr
   local is_modified = current_buf == modified_bufnr
-  local is_result = session.result_bufnr and current_buf == session.result_bufnr
+  local is_result = result_bufnr and current_buf == result_bufnr
 
   -- Inline mode: always use modified line numbers
   if is_inline then
@@ -67,9 +64,9 @@ function M.next_hunk()
   -- If cursor is not in any diff buffer, switch to modified window
   elseif not is_original and not is_modified then
     is_original = false
-    local target_win = session.modified_win
-    if target_win and vim.api.nvim_win_is_valid(target_win) then
-      vim.api.nvim_set_current_win(target_win)
+    local _, modified_win = lifecycle.get_windows(tabpage)
+    if modified_win and vim.api.nvim_win_is_valid(modified_win) then
+      vim.api.nvim_set_current_win(modified_win)
     else
       return false
     end
@@ -114,23 +111,23 @@ end
 function M.prev_hunk()
   local tabpage = vim.api.nvim_get_current_tabpage()
   local session = lifecycle.get_session(tabpage)
-  if not session or not session.stored_diff_result then
+  local diff_result = lifecycle.get_diff_result(tabpage)
+  if not session or not diff_result then
     return false
   end
 
-  local diff_result = session.stored_diff_result
   if not diff_result.changes or #diff_result.changes == 0 then
     return false
   end
 
   local current_buf = vim.api.nvim_get_current_buf()
-  local original_bufnr = session.original_bufnr
-  local modified_bufnr = session.modified_bufnr
-  local is_inline = session.layout == "inline"
+  local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
+  local is_inline = lifecycle.get_layout(tabpage) == "inline"
+  local result_bufnr = lifecycle.get_result(tabpage)
 
   local is_original = current_buf == original_bufnr
   local is_modified = current_buf == modified_bufnr
-  local is_result = session.result_bufnr and current_buf == session.result_bufnr
+  local is_result = result_bufnr and current_buf == result_bufnr
 
   -- Inline mode: always use modified line numbers
   if is_inline then
@@ -141,9 +138,9 @@ function M.prev_hunk()
   -- If cursor is not in any diff buffer, switch to modified window
   elseif not is_original and not is_modified then
     is_original = false
-    local target_win = session.modified_win
-    if target_win and vim.api.nvim_win_is_valid(target_win) then
-      vim.api.nvim_set_current_win(target_win)
+    local _, modified_win = lifecycle.get_windows(tabpage)
+    if modified_win and vim.api.nvim_win_is_valid(modified_win) then
+      vim.api.nvim_set_current_win(modified_win)
     else
       return false
     end
@@ -195,7 +192,7 @@ function M.next_file()
     return false
   end
 
-  local is_history_mode = session and session.mode == "history"
+  local is_history_mode = session and lifecycle.get_mode(tabpage) == "history"
 
   if is_history_mode then
     local history = require("codediff.ui.history")
@@ -224,7 +221,7 @@ function M.prev_file()
     return false
   end
 
-  local is_history_mode = session and session.mode == "history"
+  local is_history_mode = session and lifecycle.get_mode(tabpage) == "history"
 
   if is_history_mode then
     local history = require("codediff.ui.history")

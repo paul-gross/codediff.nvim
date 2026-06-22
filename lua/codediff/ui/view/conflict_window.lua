@@ -170,9 +170,8 @@ function M.setup_conflict_result_window(tabpage, session_config, original_win, m
   conflict.setup_sign_refresh_autocmd(tabpage, result_bufnr)
 
   -- Initialize all conflict signs (uses refresh_all_conflict_signs for centralized logic)
-  local session = lifecycle.get_session(tabpage)
-  if session then
-    conflict.refresh_all_conflict_signs(session)
+  if lifecycle.get_session(tabpage) then
+    conflict.refresh_all_conflict_signs(tabpage)
   end
 
   -- Return focus to modified window

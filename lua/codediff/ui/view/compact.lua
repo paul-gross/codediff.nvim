@@ -118,18 +118,21 @@ local FOLD_KEYS = {
 ---   2. for every other diff pane, map cursor lnum to that pane's coords
 ---   3. apply the same fold action in that pane
 ---
---- @param session table
-local function setup_fold_sync(session)
-  if session.layout == "inline" then
+--- @param tabpage number
+local function setup_fold_sync(tabpage)
+  if lifecycle.get_layout(tabpage) == "inline" then
     return -- single pane, nothing to sync
   end
   if not config.options.diff.compact_sync_folds then
     return
   end
 
+  local original_win, modified_win = lifecycle.get_windows(tabpage)
+  local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
+
   local panes = {
-    { win = session.original_win, buf = session.original_bufnr, side = "original" },
-    { win = session.modified_win, buf = session.modified_bufnr, side = "modified" },
+    { win = original_win, buf = original_bufnr, side = "original" },
+    { win = modified_win, buf = modified_bufnr, side = "modified" },
   }
 
   for _, pane in ipairs(panes) do
@@ -146,11 +149,12 @@ local function setup_fold_sync(session)
             return
           end
 
-          local s = lifecycle.get_session(vim.api.nvim_get_current_tabpage())
-          if not s or not s.compact_mode then
+          local cur_tabpage = vim.api.nvim_get_current_tabpage()
+          if not lifecycle.is_compact_mode(cur_tabpage) then
             return
           end
-          local changes = s.stored_diff_result and s.stored_diff_result.changes
+          local diff_result = lifecycle.get_diff_result(cur_tabpage)
+          local changes = diff_result and diff_result.changes
           if not changes or #changes == 0 then
             return
           end
@@ -185,9 +189,10 @@ end
 --- Remove the synced-fold keymap wraps from a session's panes.
 --- Buffer-local keymaps usually die with the buffer, but for the conflict /
 --- explorer paths where buffers persist we need to delete explicitly.
---- @param session table
-local function teardown_fold_sync(session)
-  local panes = { session.original_bufnr, session.modified_bufnr }
+--- @param tabpage number
+local function teardown_fold_sync(tabpage)
+  local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
+  local panes = { original_bufnr, modified_bufnr }
   for _, buf in ipairs(panes) do
     if buf and vim.api.nvim_buf_is_valid(buf) then
       for _, key in ipairs(FOLD_KEYS) do
@@ -202,18 +207,23 @@ end
 --- @return boolean success
 function M.enable(tabpage)
   local session = lifecycle.get_session(tabpage)
-  if not session or not session.stored_diff_result then
+  if not session then
     return false
   end
-  if session.compact_mode then
+  local diff_result = lifecycle.get_diff_result(tabpage)
+  if not diff_result then
+    return false
+  end
+  if lifecycle.is_compact_mode(tabpage) then
     return true
   end
-  if session.result_win and vim.api.nvim_win_is_valid(session.result_win) then
+  local _, result_win = lifecycle.get_result(tabpage)
+  if result_win and vim.api.nvim_win_is_valid(result_win) then
     vim.notify("Cannot enable compact mode in conflict mode", vim.log.levels.WARN)
     return false
   end
 
-  local changes = session.stored_diff_result.changes
+  local changes = diff_result.changes
   if not changes or #changes == 0 then
     vim.notify("No changes to compact", vim.log.levels.INFO)
     return false
@@ -221,21 +231,25 @@ function M.enable(tabpage)
 
   local context = config.options.diff.compact_context_lines
 
+  local original_win, modified_win = lifecycle.get_windows(tabpage)
+  local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
+
   -- Determine which windows to fold
   local entries = {}
-  if session.layout == "inline" then
-    table.insert(entries, { win = session.modified_win, buf = session.modified_bufnr, side = "modified" })
+  if lifecycle.get_layout(tabpage) == "inline" then
+    table.insert(entries, { win = modified_win, buf = modified_bufnr, side = "modified" })
   else
-    table.insert(entries, { win = session.original_win, buf = session.original_bufnr, side = "original" })
-    table.insert(entries, { win = session.modified_win, buf = session.modified_bufnr, side = "modified" })
+    table.insert(entries, { win = original_win, buf = original_bufnr, side = "original" })
+    table.insert(entries, { win = modified_win, buf = modified_bufnr, side = "modified" })
   end
 
-  session.compact_saved_fold_state = {}
+  local fold_state_store = {}
+  lifecycle.set_compact_fold_state(tabpage, fold_state_store)
 
   for _, entry in ipairs(entries) do
     if entry.win and vim.api.nvim_win_is_valid(entry.win) then
       -- Save current fold state
-      session.compact_saved_fold_state[entry.win] = {
+      fold_state_store[entry.win] = {
         foldmethod = vim.wo[entry.win].foldmethod,
         foldexpr = vim.wo[entry.win].foldexpr,
         foldlevel = vim.wo[entry.win].foldlevel,
@@ -257,8 +271,8 @@ function M.enable(tabpage)
     end
   end
 
-  session.compact_mode = true
-  setup_fold_sync(session)
+  lifecycle.set_compact_mode(tabpage, true)
+  setup_fold_sync(tabpage)
   return true
 end
 
@@ -267,11 +281,11 @@ end
 --- @return boolean success
 function M.disable(tabpage)
   local session = lifecycle.get_session(tabpage)
-  if not session or not session.compact_mode then
+  if not session or not lifecycle.is_compact_mode(tabpage) then
     return false
   end
 
-  local saved = session.compact_saved_fold_state or {}
+  local saved = lifecycle.get_compact_fold_state(tabpage) or {}
   for win, fold_state in pairs(saved) do
     if vim.api.nvim_win_is_valid(win) then
       vim.wo[win].foldmethod = fold_state.foldmethod
@@ -284,10 +298,10 @@ function M.disable(tabpage)
     visible_lines_by_win[win] = nil
   end
 
-  teardown_fold_sync(session)
+  teardown_fold_sync(tabpage)
 
-  session.compact_saved_fold_state = nil
-  session.compact_mode = false
+  lifecycle.set_compact_fold_state(tabpage, nil)
+  lifecycle.set_compact_mode(tabpage, false)
   return true
 end
 
@@ -301,7 +315,7 @@ function M.toggle(tabpage)
     return false
   end
 
-  if session.compact_mode then
+  if lifecycle.is_compact_mode(tabpage) then
     return M.disable(tabpage)
   else
     return M.enable(tabpage)
@@ -310,30 +324,34 @@ end
 
 --- Re-apply compact mode fold settings to current windows.
 --- Called after file switches or re-renders where window buffers change
---- but session.compact_mode should persist.
+--- but compact mode should persist.
 --- @param tabpage number
 function M.reapply(tabpage)
   local session = lifecycle.get_session(tabpage)
-  if not session or not session.compact_mode then
+  if not session or not lifecycle.is_compact_mode(tabpage) then
     return
   end
-  if not session.stored_diff_result then
+  local diff_result = lifecycle.get_diff_result(tabpage)
+  if not diff_result then
     return
   end
 
-  local changes = session.stored_diff_result.changes
+  local changes = diff_result.changes
   if not changes or #changes == 0 then
     return
   end
 
   local context = config.options.diff.compact_context_lines
 
+  local original_win, modified_win = lifecycle.get_windows(tabpage)
+  local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
+
   local entries = {}
-  if session.layout == "inline" then
-    table.insert(entries, { win = session.modified_win, buf = session.modified_bufnr, side = "modified" })
+  if lifecycle.get_layout(tabpage) == "inline" then
+    table.insert(entries, { win = modified_win, buf = modified_bufnr, side = "modified" })
   else
-    table.insert(entries, { win = session.original_win, buf = session.original_bufnr, side = "original" })
-    table.insert(entries, { win = session.modified_win, buf = session.modified_bufnr, side = "modified" })
+    table.insert(entries, { win = original_win, buf = original_bufnr, side = "original" })
+    table.insert(entries, { win = modified_win, buf = modified_bufnr, side = "modified" })
   end
 
   for _, entry in ipairs(entries) do
@@ -351,7 +369,7 @@ function M.reapply(tabpage)
 
   -- Buffers may have changed (file switch in explorer mode). Re-install
   -- the sync keymaps on the current bufnrs.
-  setup_fold_sync(session)
+  setup_fold_sync(tabpage)
 end
 
 --- Refresh compact mode after diff recomputation.
@@ -359,11 +377,12 @@ end
 --- @param tabpage number
 function M.refresh(tabpage)
   local session = lifecycle.get_session(tabpage)
-  if not session or not session.compact_mode then
+  if not session or not lifecycle.is_compact_mode(tabpage) then
     return
   end
 
-  local changes = session.stored_diff_result and session.stored_diff_result.changes
+  local diff_result = lifecycle.get_diff_result(tabpage)
+  local changes = diff_result and diff_result.changes
   if not changes or #changes == 0 then
     M.disable(tabpage)
     return

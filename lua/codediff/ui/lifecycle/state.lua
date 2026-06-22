@@ -166,11 +166,16 @@ local function resume_diff(tabpage)
       -- Store new diff result
       diff.stored_diff_result = lines_diff
 
-      -- Update changedtick and mtime
-      diff.changedtick.original = vim.api.nvim_buf_get_changedtick(diff.original_bufnr)
-      diff.changedtick.modified = vim.api.nvim_buf_get_changedtick(diff.modified_bufnr)
-      diff.mtime.original = get_file_mtime(diff.original_bufnr)
-      diff.mtime.modified = get_file_mtime(diff.modified_bufnr)
+      -- Re-record the change-tracking watermark (changedtick + mtime) so the
+      -- next suspend/resume compares against the content we just rendered.
+      local accessors = require("codediff.ui.lifecycle.accessors")
+      accessors.mark_synced(tabpage, {
+        original = vim.api.nvim_buf_get_changedtick(diff.original_bufnr),
+        modified = vim.api.nvim_buf_get_changedtick(diff.modified_bufnr),
+      }, {
+        original = get_file_mtime(diff.original_bufnr),
+        modified = get_file_mtime(diff.modified_bufnr),
+      })
     end
   else
     -- Nothing changed, reuse stored diff result

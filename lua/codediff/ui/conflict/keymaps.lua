@@ -19,8 +19,11 @@ function M.setup_keymaps(tabpage)
 
   local keymaps = config.options.keymaps.conflict or {}
 
+  local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
+  local result_bufnr = lifecycle.get_result(tabpage)
+
   -- Bind to incoming (left), current (right), AND result buffers
-  local buffers = { session.original_bufnr, session.modified_bufnr, session.result_bufnr }
+  local buffers = { original_bufnr, modified_bufnr, result_bufnr }
 
   local base_opts = { noremap = true, silent = true, nowait = true }
 
@@ -131,7 +134,7 @@ function M.setup_keymaps(tabpage)
       end
 
       -- Vimdiff-style diffget from incoming (2do) - only on result buffer
-      if keymaps.diffget_incoming and bufnr == session.result_bufnr then
+      if keymaps.diffget_incoming and bufnr == result_bufnr then
         set(
           bufnr,
           "n",
@@ -144,7 +147,7 @@ function M.setup_keymaps(tabpage)
       end
 
       -- Vimdiff-style diffget from current (3do) - only on result buffer
-      if keymaps.diffget_current and bufnr == session.result_bufnr then
+      if keymaps.diffget_current and bufnr == result_bufnr then
         set(
           bufnr,
           "n",

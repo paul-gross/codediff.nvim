@@ -12,9 +12,11 @@ local function get_layout(session_config, tabpage)
   if session_config and session_config.conflict then
     return "side-by-side"
   end
-  local session = tabpage and lifecycle.get_session(tabpage) or nil
-  if session and session.layout then
-    return session.layout
+  if tabpage and lifecycle.get_session(tabpage) then
+    local layout_val = lifecycle.get_layout(tabpage)
+    if layout_val then
+      return layout_val
+    end
   end
   if session_config and session_config.layout then
     return session_config.layout

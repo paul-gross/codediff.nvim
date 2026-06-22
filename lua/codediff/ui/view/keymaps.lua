@@ -15,8 +15,8 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
 
   -- Check mode context
   local session = lifecycle.get_session(tabpage)
-  local is_history_mode = session and session.mode == "history"
-  local is_inline = session and session.layout == "inline"
+  local is_history_mode = session and lifecycle.get_mode(tabpage) == "history"
+  local is_inline = session and lifecycle.get_layout(tabpage) == "inline"
 
   -- Helper: Quit diff view
   local function quit_diff()
@@ -66,12 +66,11 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
   -- Helper: Find hunk at cursor position
   -- Returns the hunk and its index, or nil if cursor is not in a hunk
   local function find_hunk_at_cursor()
-    local session = lifecycle.get_session(tabpage)
-    if not session or not session.stored_diff_result then
+    local cur_diff_result = lifecycle.get_diff_result(tabpage)
+    if not cur_diff_result then
       return nil, nil
     end
-    local diff_result = session.stored_diff_result
-    if not diff_result.changes or #diff_result.changes == 0 then
+    if not cur_diff_result.changes or #cur_diff_result.changes == 0 then
       return nil, nil
     end
 
@@ -81,7 +80,7 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
     local cursor = vim.api.nvim_win_get_cursor(0)
     local current_line = cursor[1]
 
-    for i, mapping in ipairs(diff_result.changes) do
+    for i, mapping in ipairs(cur_diff_result.changes) do
       local start_line = is_original and mapping.original.start_line or mapping.modified.start_line
       local end_line = is_original and mapping.original.end_line or mapping.modified.end_line
       -- Check if cursor is within this hunk (end_line is exclusive)
@@ -98,8 +97,7 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
 
   -- Helper: Diff get - obtain change from other buffer to current buffer
   local function diff_get()
-    local session = lifecycle.get_session(tabpage)
-    if not session then
+    if not lifecycle.get_session(tabpage) then
       return
     end
 
@@ -159,8 +157,7 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
 
   -- Helper: Diff put - put change from current buffer to other buffer
   local function diff_put()
-    local session = lifecycle.get_session(tabpage)
-    if not session then
+    if not lifecycle.get_session(tabpage) then
       return
     end
 
@@ -210,9 +207,8 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
   local function toggle_stage()
     local current_buf = vim.api.nvim_get_current_buf()
     local explorer = lifecycle.get_explorer(tabpage)
-    local session = lifecycle.get_session(tabpage)
 
-    if not session then
+    if not lifecycle.get_session(tabpage) then
       return
     end
 
@@ -262,8 +258,7 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
 
   -- Helper: Open the current real buffer in the previous tab (or create one before)
   local function open_in_prev_tab()
-    local session = lifecycle.get_session(tabpage)
-    if not session then
+    if not lifecycle.get_session(tabpage) then
       return
     end
 
@@ -291,7 +286,8 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
         vim.notify("Buffer has no associated file path", vim.log.levels.WARN)
         return
       end
-      local git_root = session.git_root
+      local ctx = lifecycle.get_git_context(tabpage)
+      local git_root = ctx and ctx.git_root
       target_file = git_root .. "/" .. rel_path
     else
       target_file = vim.api.nvim_buf_get_name(current_buf)
@@ -411,14 +407,14 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
 
   -- Helper: Stage hunk under cursor to git index
   local function stage_hunk()
-    local session = lifecycle.get_session(tabpage)
-    if not session or not session.git_root then
+    local ctx = lifecycle.get_git_context(tabpage)
+    if not ctx or not ctx.git_root then
       vim.notify("Not in a git repository", vim.log.levels.WARN)
       return
     end
 
     -- Only allow staging from unstaged views (working tree changes)
-    if session.modified_revision ~= nil then
+    if ctx.modified_revision ~= nil then
       vim.notify("Stage only works on unstaged changes", vim.log.levels.WARN)
       return
     end
@@ -430,7 +426,8 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
     end
 
     -- Get the file path relative to git root
-    local file_path = session.original_path or session.modified_path
+    local original_path, modified_path = lifecycle.get_paths(tabpage)
+    local file_path = original_path or modified_path
     if not file_path or file_path == "" then
       vim.notify("No file path for staging", vim.log.levels.WARN)
       return
@@ -449,7 +446,7 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
     local patch = build_hunk_patch(file_path, orig_lines, mod_lines, hunk.original.start_line, hunk.modified.start_line)
 
     local git = require("codediff.core.git")
-    git.apply_patch(session.git_root, patch, false, function(err)
+    git.apply_patch(ctx.git_root, patch, false, function(err)
       if err then
         vim.notify("Failed to stage hunk: " .. err, vim.log.levels.ERROR)
         return
@@ -460,14 +457,14 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
 
   -- Helper: Unstage hunk under cursor from git index
   local function unstage_hunk()
-    local session = lifecycle.get_session(tabpage)
-    if not session or not session.git_root then
+    local ctx = lifecycle.get_git_context(tabpage)
+    if not ctx or not ctx.git_root then
       vim.notify("Not in a git repository", vim.log.levels.WARN)
       return
     end
 
     -- Only allow unstaging from staged views
-    if session.modified_revision ~= ":0" then
+    if ctx.modified_revision ~= ":0" then
       vim.notify("Unstage only works on staged changes", vim.log.levels.WARN)
       return
     end
@@ -478,7 +475,8 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
       return
     end
 
-    local file_path = session.original_path or session.modified_path
+    local original_path, modified_path = lifecycle.get_paths(tabpage)
+    local file_path = original_path or modified_path
     if not file_path or file_path == "" then
       vim.notify("No file path for unstaging", vim.log.levels.WARN)
       return
@@ -497,7 +495,7 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
     local patch = build_hunk_patch(file_path, orig_lines, mod_lines, hunk.original.start_line, hunk.modified.start_line)
 
     local git = require("codediff.core.git")
-    git.apply_patch(session.git_root, patch, true, function(err)
+    git.apply_patch(ctx.git_root, patch, true, function(err)
       if err then
         vim.notify("Failed to unstage hunk: " .. err, vim.log.levels.ERROR)
         return
@@ -508,14 +506,14 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
 
   -- Helper: Discard hunk under cursor from working tree
   local function discard_hunk()
-    local session = lifecycle.get_session(tabpage)
-    if not session or not session.git_root then
+    local ctx = lifecycle.get_git_context(tabpage)
+    if not ctx or not ctx.git_root then
       vim.notify("Not in a git repository", vim.log.levels.WARN)
       return
     end
 
     -- Only allow discarding in unstaged views (working tree changes)
-    if session.modified_revision ~= nil then
+    if ctx.modified_revision ~= nil then
       vim.notify("Discard only works on unstaged changes (working tree)", vim.log.levels.WARN)
       return
     end
@@ -526,7 +524,8 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
       return
     end
 
-    local file_path = session.original_path or session.modified_path
+    local original_path, modified_path = lifecycle.get_paths(tabpage)
+    local file_path = original_path or modified_path
     if not file_path or file_path == "" then
       vim.notify("No file path for discarding", vim.log.levels.WARN)
       return
@@ -552,7 +551,7 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
     local patch = build_hunk_patch(file_path, orig_lines, mod_lines, hunk.original.start_line, hunk.modified.start_line)
 
     local git = require("codediff.core.git")
-    git.discard_hunk_patch(session.git_root, patch, function(err)
+    git.discard_hunk_patch(ctx.git_root, patch, function(err)
       if err then
         vim.notify("Failed to discard hunk: " .. err, vim.log.levels.ERROR)
         return
@@ -709,15 +708,15 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
   -- ========================================================================
 
   local function align_move()
-    local session = lifecycle.get_session(tabpage)
-    if not session or not session.stored_diff_result or not session.stored_diff_result.moves then
+    local cur_diff_result = lifecycle.get_diff_result(tabpage)
+    if not cur_diff_result or not cur_diff_result.moves then
       return
     end
     if is_inline then
       return
     end -- Only works in side-by-side
 
-    local moves = session.stored_diff_result.moves
+    local moves = cur_diff_result.moves
     if #moves == 0 then
       vim.notify("No moved code blocks in current diff", vim.log.levels.INFO)
       return
@@ -727,8 +726,7 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
     local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
 
     -- Read current buffers from session (not closure — may have changed via file switch)
-    local sess_orig_buf = session.original_bufnr
-    local sess_mod_buf = session.modified_bufnr
+    local sess_orig_buf, sess_mod_buf = lifecycle.get_buffers(tabpage)
 
     -- Find which move the cursor is in
     local current_move = nil
@@ -747,7 +745,8 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
     end
 
     local current_win = vim.api.nvim_get_current_win()
-    local other_win = is_on_original and session.modified_win or session.original_win
+    local sess_orig_win, sess_mod_win = lifecycle.get_windows(tabpage)
+    local other_win = is_on_original and sess_mod_win or sess_orig_win
     if not vim.api.nvim_win_is_valid(other_win) then
       return
     end
@@ -820,18 +819,19 @@ function M.setup_all_keymaps(tabpage, original_bufnr, modified_bufnr, is_explore
         vim.fn.winrestview(current_view)
       end)
       -- Use the same anchor technique as initial render to establish scrollbind
-      local sess = lifecycle.get_session(tabpage)
-      local orig_win = sess and sess.original_win or current_win
-      local mod_win = sess and sess.modified_win or other_win
-      local orig_buf_nr = sess and sess.original_bufnr or vim.api.nvim_win_get_buf(orig_win)
-      local mod_buf_nr = sess and sess.modified_bufnr or vim.api.nvim_win_get_buf(mod_win)
-      local diff_result = sess and sess.stored_diff_result
+      local restore_orig_win, restore_mod_win = lifecycle.get_windows(tabpage)
+      restore_orig_win = restore_orig_win or current_win
+      restore_mod_win = restore_mod_win or other_win
+      local restore_orig_buf, restore_mod_buf = lifecycle.get_buffers(tabpage)
+      restore_orig_buf = restore_orig_buf or vim.api.nvim_win_get_buf(restore_orig_win)
+      restore_mod_buf = restore_mod_buf or vim.api.nvim_win_get_buf(restore_mod_win)
+      local restore_diff_result = lifecycle.get_diff_result(tabpage)
       local orig_cur = { current_view.lnum, current_view.col }
       local mod_cur = { other_view.lnum, other_view.col }
       if not is_on_original then
         orig_cur, mod_cur = mod_cur, orig_cur
       end
-      render.establish_scrollbind(orig_win, mod_win, orig_buf_nr, mod_buf_nr, diff_result, orig_cur, mod_cur)
+      render.establish_scrollbind(restore_orig_win, restore_mod_win, restore_orig_buf, restore_mod_buf, restore_diff_result, orig_cur, mod_cur)
     end
 
     -- Restore when cursor moves out of the moved block

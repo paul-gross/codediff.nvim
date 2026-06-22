@@ -105,7 +105,7 @@ local function do_diff_update(bufnr, skip_watcher_check)
 
     -- Check if this is an inline mode session
     local session = lifecycle.get_session(tabpage)
-    if session and session.layout == "inline" then
+    if session and lifecycle.get_layout(tabpage) == "inline" then
       local inline_mod = require("codediff.ui.inline")
       inline_mod.render_inline_diff(modified_bufnr, lines_diff, original_lines, modified_lines)
       return
@@ -389,6 +389,12 @@ function M.sync_mutable_buffers(tabpage)
   end
 
   local git = require("codediff.core.git")
+  local ctx = lifecycle.get_git_context(tabpage)
+  local orig_bufnr, mod_bufnr = lifecycle.get_buffers(tabpage)
+  local orig_path, mod_path = lifecycle.get_paths(tabpage)
+  local orig_revision = ctx and ctx.original_revision
+  local mod_revision = ctx and ctx.modified_revision
+  local git_root = ctx and ctx.git_root
 
   local function is_mutable(revision)
     return revision and revision:match("^:[0-3]$")
@@ -402,7 +408,7 @@ function M.sync_mutable_buffers(tabpage)
       return
     end
 
-    git.get_file_content(revision, session.git_root, path, function(err, lines)
+    git.get_file_content(revision, git_root, path, function(err, lines)
       vim.schedule(function()
         if err or not lines then
           return
@@ -439,8 +445,8 @@ function M.sync_mutable_buffers(tabpage)
     end)
   end
 
-  sync_buffer(session.original_bufnr, session.original_revision, session.original_path)
-  sync_buffer(session.modified_bufnr, session.modified_revision, session.modified_path)
+  sync_buffer(orig_bufnr, orig_revision, orig_path)
+  sync_buffer(mod_bufnr, mod_revision, mod_path)
 end
 
 -- Cleanup all watched buffers

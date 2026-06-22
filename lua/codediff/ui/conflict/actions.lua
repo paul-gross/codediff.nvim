@@ -77,13 +77,13 @@ end
 --- @param tabpage number
 --- @return boolean success
 function M.accept_incoming(tabpage)
-  local session = lifecycle.get_session(tabpage)
-  if not session then
+  if not lifecycle.get_session(tabpage) then
     vim.notify("[codediff] No active session", vim.log.levels.WARN)
     return false
   end
 
-  if not session.conflict_blocks or #session.conflict_blocks == 0 then
+  local conflict_blocks = lifecycle.get_conflict_blocks(tabpage)
+  if not conflict_blocks or #conflict_blocks == 0 then
     vim.notify("[codediff] No conflicts in this session", vim.log.levels.WARN)
     return false
   end
@@ -93,34 +93,35 @@ function M.accept_incoming(tabpage)
   local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
   local side = nil
 
-  if current_buf == session.original_bufnr then
+  local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
+  if current_buf == original_bufnr then
     side = "left"
-  elseif current_buf == session.modified_bufnr then
+  elseif current_buf == modified_bufnr then
     side = "right"
   else
     vim.notify("[codediff] Cursor not in diff buffer", vim.log.levels.WARN)
     return false
   end
 
-  local block = tracking.find_conflict_at_cursor(session, cursor_line, side, false)
+  local block = tracking.find_conflict_at_cursor(tabpage, cursor_line, side, false)
   if not block then
     vim.notify("[codediff] No active conflict at cursor position", vim.log.levels.INFO)
     return false
   end
 
   -- Get incoming (left) content
-  local incoming_lines = tracking.get_lines_for_range(session.original_bufnr, block.output1_range.start_line, block.output1_range.end_line)
+  local incoming_lines = tracking.get_lines_for_range(original_bufnr, block.output1_range.start_line, block.output1_range.end_line)
 
   -- Apply to result
-  local result_bufnr = session.result_bufnr
-  local base_lines = session.result_base_lines
+  local result_bufnr = lifecycle.get_result(tabpage)
+  local base_lines = lifecycle.get_result_base_lines(tabpage)
   if not result_bufnr or not base_lines then
     vim.notify("[codediff] No result buffer or base lines", vim.log.levels.ERROR)
     return false
   end
 
   apply_to_result(result_bufnr, block, incoming_lines, base_lines)
-  signs.refresh_all_conflict_signs(session)
+  signs.refresh_all_conflict_signs(tabpage)
   auto_refresh.refresh_result_now(result_bufnr)
   return true
 end
@@ -129,13 +130,13 @@ end
 --- @param tabpage number
 --- @return boolean success
 function M.accept_current(tabpage)
-  local session = lifecycle.get_session(tabpage)
-  if not session then
+  if not lifecycle.get_session(tabpage) then
     vim.notify("[codediff] No active session", vim.log.levels.WARN)
     return false
   end
 
-  if not session.conflict_blocks or #session.conflict_blocks == 0 then
+  local conflict_blocks = lifecycle.get_conflict_blocks(tabpage)
+  if not conflict_blocks or #conflict_blocks == 0 then
     vim.notify("[codediff] No conflicts in this session", vim.log.levels.WARN)
     return false
   end
@@ -144,33 +145,34 @@ function M.accept_current(tabpage)
   local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
   local side = nil
 
-  if current_buf == session.original_bufnr then
+  local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
+  if current_buf == original_bufnr then
     side = "left"
-  elseif current_buf == session.modified_bufnr then
+  elseif current_buf == modified_bufnr then
     side = "right"
   else
     vim.notify("[codediff] Cursor not in diff buffer", vim.log.levels.WARN)
     return false
   end
 
-  local block = tracking.find_conflict_at_cursor(session, cursor_line, side, false)
+  local block = tracking.find_conflict_at_cursor(tabpage, cursor_line, side, false)
   if not block then
     vim.notify("[codediff] No active conflict at cursor position", vim.log.levels.INFO)
     return false
   end
 
   -- Get current (right) content
-  local current_lines = tracking.get_lines_for_range(session.modified_bufnr, block.output2_range.start_line, block.output2_range.end_line)
+  local current_lines = tracking.get_lines_for_range(modified_bufnr, block.output2_range.start_line, block.output2_range.end_line)
 
-  local result_bufnr = session.result_bufnr
-  local base_lines = session.result_base_lines
+  local result_bufnr = lifecycle.get_result(tabpage)
+  local base_lines = lifecycle.get_result_base_lines(tabpage)
   if not result_bufnr or not base_lines then
     vim.notify("[codediff] No result buffer or base lines", vim.log.levels.ERROR)
     return false
   end
 
   apply_to_result(result_bufnr, block, current_lines, base_lines)
-  signs.refresh_all_conflict_signs(session)
+  signs.refresh_all_conflict_signs(tabpage)
   auto_refresh.refresh_result_now(result_bufnr)
   return true
 end
@@ -178,11 +180,11 @@ end
 --- Try to smart combine inputs like VSCode does
 --- This interleaves character-level edits sorted by their position in base
 --- Returns nil if edits overlap and cannot be combined
---- @param session table Session with buffer references
+--- @param tabpage number The tabpage ID
 --- @param block table Conflict block with inner1, inner2
 --- @param first_input number 1 or 2 - which input takes priority on ties
 --- @return table|nil Combined lines, or nil if cannot be combined
-local function smart_combine_inputs(session, block, first_input)
+local function smart_combine_inputs(tabpage, block, first_input)
   local inner1 = block.inner1 or {}
   local inner2 = block.inner2 or {}
 
@@ -232,13 +234,12 @@ local function smart_combine_inputs(session, block, first_input)
   end)
 
   -- Get input buffer contents (VSCode uses textModel.getValueInRange on full models).
-  -- For the merge base we use session.merge_base_lines (true stage-:1 content)
+  -- For the merge base we use merge_base_lines (true stage-:1 content)
   -- rather than reading from result_bufnr — the Result buffer is now seeded
   -- with the auto-merged content, so its line numbers no longer match
   -- base_range.
-  local base_lines = session.merge_base_lines or session.result_base_lines or {}
-  local input1_bufnr = session.original_bufnr
-  local input2_bufnr = session.modified_bufnr
+  local base_lines = lifecycle.get_merge_base_lines(tabpage) or lifecycle.get_result_base_lines(tabpage) or {}
+  local input1_bufnr, input2_bufnr = lifecycle.get_buffers(tabpage)
 
   -- Helper: get text from buffer between two positions (like VSCode's getValueInRange)
   -- Positions are 1-based (line, col)
@@ -399,13 +400,13 @@ end
 --- @param tabpage number
 --- @return boolean success
 function M.accept_both(tabpage)
-  local session = lifecycle.get_session(tabpage)
-  if not session then
+  if not lifecycle.get_session(tabpage) then
     vim.notify("[codediff] No active session", vim.log.levels.WARN)
     return false
   end
 
-  if not session.conflict_blocks or #session.conflict_blocks == 0 then
+  local conflict_blocks = lifecycle.get_conflict_blocks(tabpage)
+  if not conflict_blocks or #conflict_blocks == 0 then
     vim.notify("[codediff] No conflicts in this session", vim.log.levels.WARN)
     return false
   end
@@ -414,23 +415,24 @@ function M.accept_both(tabpage)
   local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
   local side = nil
 
-  if current_buf == session.original_bufnr then
+  local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
+  if current_buf == original_bufnr then
     side = "left"
-  elseif current_buf == session.modified_bufnr then
+  elseif current_buf == modified_bufnr then
     side = "right"
   else
     vim.notify("[codediff] Cursor not in diff buffer", vim.log.levels.WARN)
     return false
   end
 
-  local block = tracking.find_conflict_at_cursor(session, cursor_line, side, false)
+  local block = tracking.find_conflict_at_cursor(tabpage, cursor_line, side, false)
   if not block then
     vim.notify("[codediff] No active conflict at cursor position", vim.log.levels.INFO)
     return false
   end
 
-  local result_bufnr = session.result_bufnr
-  local base_lines = session.result_base_lines
+  local result_bufnr = lifecycle.get_result(tabpage)
+  local base_lines = lifecycle.get_result_base_lines(tabpage)
   if not result_bufnr or not base_lines then
     vim.notify("[codediff] No result buffer or base lines", vim.log.levels.ERROR)
     return false
@@ -442,17 +444,17 @@ function M.accept_both(tabpage)
   local first_input = (side == "left") and 1 or 2
 
   -- Try smart combination first (like VSCode's "Accept Combination")
-  local combined = smart_combine_inputs(session, block, first_input)
+  local combined = smart_combine_inputs(tabpage, block, first_input)
 
   if not combined then
     -- Fallback to dumb combination (concatenate)
-    local incoming_lines = tracking.get_lines_for_range(session.original_bufnr, block.output1_range.start_line, block.output1_range.end_line)
-    local current_lines = tracking.get_lines_for_range(session.modified_bufnr, block.output2_range.start_line, block.output2_range.end_line)
+    local incoming_lines = tracking.get_lines_for_range(original_bufnr, block.output1_range.start_line, block.output1_range.end_line)
+    local current_lines = tracking.get_lines_for_range(modified_bufnr, block.output2_range.start_line, block.output2_range.end_line)
     combined = dumb_combine_inputs(incoming_lines, current_lines, first_input)
   end
 
   apply_to_result(result_bufnr, block, combined, base_lines)
-  signs.refresh_all_conflict_signs(session)
+  signs.refresh_all_conflict_signs(tabpage)
   auto_refresh.refresh_result_now(result_bufnr)
   return true
 end
@@ -461,13 +463,13 @@ end
 --- @param tabpage number
 --- @return boolean success
 function M.discard(tabpage)
-  local session = lifecycle.get_session(tabpage)
-  if not session then
+  if not lifecycle.get_session(tabpage) then
     vim.notify("[codediff] No active session", vim.log.levels.WARN)
     return false
   end
 
-  if not session.conflict_blocks or #session.conflict_blocks == 0 then
+  local conflict_blocks = lifecycle.get_conflict_blocks(tabpage)
+  if not conflict_blocks or #conflict_blocks == 0 then
     vim.notify("[codediff] No conflicts in this session", vim.log.levels.WARN)
     return false
   end
@@ -476,25 +478,26 @@ function M.discard(tabpage)
   local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
   local side = nil
 
-  if current_buf == session.original_bufnr then
+  local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
+  if current_buf == original_bufnr then
     side = "left"
-  elseif current_buf == session.modified_bufnr then
+  elseif current_buf == modified_bufnr then
     side = "right"
   else
     vim.notify("[codediff] Cursor not in diff buffer", vim.log.levels.WARN)
     return false
   end
 
-  local block = tracking.find_conflict_at_cursor(session, cursor_line, side, true) -- Allow resolved
+  local block = tracking.find_conflict_at_cursor(tabpage, cursor_line, side, true) -- Allow resolved
   if not block then
     vim.notify("[codediff] No conflict at cursor position", vim.log.levels.INFO)
     return false
   end
 
-  -- Get base content for this range. session.merge_base_lines holds the true
+  -- Get base content for this range. merge_base_lines holds the true
   -- merge base (stage :1) so we can index it by base_range coordinates
   -- regardless of what's been auto-merged into the Result seed.
-  local base_lines = session.merge_base_lines or session.result_base_lines
+  local base_lines = lifecycle.get_merge_base_lines(tabpage) or lifecycle.get_result_base_lines(tabpage)
   if not base_lines then
     vim.notify("[codediff] No base lines available", vim.log.levels.ERROR)
     return false
@@ -505,7 +508,7 @@ function M.discard(tabpage)
     table.insert(base_content, base_lines[i] or "")
   end
 
-  local result_bufnr = session.result_bufnr
+  local result_bufnr = lifecycle.get_result(tabpage)
   if not result_bufnr then
     vim.notify("[codediff] No result buffer", vim.log.levels.ERROR)
     return false
@@ -513,8 +516,8 @@ function M.discard(tabpage)
 
   -- apply_to_result indexes its base_lines parameter by result_range for the
   -- content-search fallback, so pass the Result seed (auto-merged content).
-  apply_to_result(result_bufnr, block, base_content, session.result_base_lines or base_lines)
-  signs.refresh_all_conflict_signs(session)
+  apply_to_result(result_bufnr, block, base_content, lifecycle.get_result_base_lines(tabpage) or base_lines)
+  signs.refresh_all_conflict_signs(tabpage)
   auto_refresh.refresh_result_now(result_bufnr)
   return true
 end
@@ -523,43 +526,44 @@ end
 --- @param tabpage number
 --- @return boolean success
 function M.accept_all_incoming(tabpage)
-  local session = lifecycle.get_session(tabpage)
-  if not session then
+  if not lifecycle.get_session(tabpage) then
     vim.notify("[codediff] No active session", vim.log.levels.WARN)
     return false
   end
 
-  if not session.conflict_blocks or #session.conflict_blocks == 0 then
+  local conflict_blocks = lifecycle.get_conflict_blocks(tabpage)
+  if not conflict_blocks or #conflict_blocks == 0 then
     vim.notify("[codediff] No conflicts in this session", vim.log.levels.WARN)
     return false
   end
 
-  local result_bufnr = session.result_bufnr
-  local base_lines = session.result_base_lines
+  local result_bufnr = lifecycle.get_result(tabpage)
+  local base_lines = lifecycle.get_result_base_lines(tabpage)
   if not result_bufnr or not base_lines then
     vim.notify("[codediff] No result buffer or base lines", vim.log.levels.ERROR)
     return false
   end
 
+  local original_bufnr = lifecycle.get_buffers(tabpage)
   local count = 0
 
   -- Process blocks in REVERSE order (bottom-to-top) to avoid line offset issues
   -- Wrap in undojoin for atomic undo
   vim.api.nvim_buf_call(result_bufnr, function()
-    for i = #session.conflict_blocks, 1, -1 do
-      local block = session.conflict_blocks[i]
-      if tracking.is_block_active(session, block) then
+    for i = #conflict_blocks, 1, -1 do
+      local block = conflict_blocks[i]
+      if tracking.is_block_active(tabpage, block) then
         if count > 0 then
           pcall(vim.cmd, "undojoin")
         end
-        local incoming_lines = tracking.get_lines_for_range(session.original_bufnr, block.output1_range.start_line, block.output1_range.end_line)
+        local incoming_lines = tracking.get_lines_for_range(original_bufnr, block.output1_range.start_line, block.output1_range.end_line)
         apply_to_result(result_bufnr, block, incoming_lines, base_lines)
         count = count + 1
       end
     end
   end)
 
-  signs.refresh_all_conflict_signs(session)
+  signs.refresh_all_conflict_signs(tabpage)
   auto_refresh.refresh_result_now(result_bufnr)
   vim.notify(string.format("[codediff] Accepted %d incoming change(s)", count), vim.log.levels.INFO)
   return count > 0
@@ -569,41 +573,42 @@ end
 --- @param tabpage number
 --- @return boolean success
 function M.accept_all_current(tabpage)
-  local session = lifecycle.get_session(tabpage)
-  if not session then
+  if not lifecycle.get_session(tabpage) then
     vim.notify("[codediff] No active session", vim.log.levels.WARN)
     return false
   end
 
-  if not session.conflict_blocks or #session.conflict_blocks == 0 then
+  local conflict_blocks = lifecycle.get_conflict_blocks(tabpage)
+  if not conflict_blocks or #conflict_blocks == 0 then
     vim.notify("[codediff] No conflicts in this session", vim.log.levels.WARN)
     return false
   end
 
-  local result_bufnr = session.result_bufnr
-  local base_lines = session.result_base_lines
+  local result_bufnr = lifecycle.get_result(tabpage)
+  local base_lines = lifecycle.get_result_base_lines(tabpage)
   if not result_bufnr or not base_lines then
     vim.notify("[codediff] No result buffer or base lines", vim.log.levels.ERROR)
     return false
   end
 
+  local _, modified_bufnr = lifecycle.get_buffers(tabpage)
   local count = 0
 
   vim.api.nvim_buf_call(result_bufnr, function()
-    for i = #session.conflict_blocks, 1, -1 do
-      local block = session.conflict_blocks[i]
-      if tracking.is_block_active(session, block) then
+    for i = #conflict_blocks, 1, -1 do
+      local block = conflict_blocks[i]
+      if tracking.is_block_active(tabpage, block) then
         if count > 0 then
           pcall(vim.cmd, "undojoin")
         end
-        local current_lines = tracking.get_lines_for_range(session.modified_bufnr, block.output2_range.start_line, block.output2_range.end_line)
+        local current_lines = tracking.get_lines_for_range(modified_bufnr, block.output2_range.start_line, block.output2_range.end_line)
         apply_to_result(result_bufnr, block, current_lines, base_lines)
         count = count + 1
       end
     end
   end)
 
-  signs.refresh_all_conflict_signs(session)
+  signs.refresh_all_conflict_signs(tabpage)
   auto_refresh.refresh_result_now(result_bufnr)
   vim.notify(string.format("[codediff] Accepted %d current change(s)", count), vim.log.levels.INFO)
   return count > 0
@@ -616,36 +621,37 @@ end
 function M.accept_all_both(tabpage, first_input)
   first_input = first_input or 1
 
-  local session = lifecycle.get_session(tabpage)
-  if not session then
+  if not lifecycle.get_session(tabpage) then
     vim.notify("[codediff] No active session", vim.log.levels.WARN)
     return false
   end
 
-  if not session.conflict_blocks or #session.conflict_blocks == 0 then
+  local conflict_blocks = lifecycle.get_conflict_blocks(tabpage)
+  if not conflict_blocks or #conflict_blocks == 0 then
     vim.notify("[codediff] No conflicts in this session", vim.log.levels.WARN)
     return false
   end
 
-  local result_bufnr = session.result_bufnr
-  local base_lines = session.result_base_lines
+  local result_bufnr = lifecycle.get_result(tabpage)
+  local base_lines = lifecycle.get_result_base_lines(tabpage)
   if not result_bufnr or not base_lines then
     vim.notify("[codediff] No result buffer or base lines", vim.log.levels.ERROR)
     return false
   end
 
+  local original_bufnr, modified_bufnr = lifecycle.get_buffers(tabpage)
   local count = 0
 
   vim.api.nvim_buf_call(result_bufnr, function()
-    for i = #session.conflict_blocks, 1, -1 do
-      local block = session.conflict_blocks[i]
-      if tracking.is_block_active(session, block) then
+    for i = #conflict_blocks, 1, -1 do
+      local block = conflict_blocks[i]
+      if tracking.is_block_active(tabpage, block) then
         if count > 0 then
           pcall(vim.cmd, "undojoin")
         end
 
-        local incoming_lines = tracking.get_lines_for_range(session.original_bufnr, block.output1_range.start_line, block.output1_range.end_line)
-        local current_lines = tracking.get_lines_for_range(session.modified_bufnr, block.output2_range.start_line, block.output2_range.end_line)
+        local incoming_lines = tracking.get_lines_for_range(original_bufnr, block.output1_range.start_line, block.output1_range.end_line)
+        local current_lines = tracking.get_lines_for_range(modified_bufnr, block.output2_range.start_line, block.output2_range.end_line)
 
         -- Combine both sides
         local combined
@@ -661,7 +667,7 @@ function M.accept_all_both(tabpage, first_input)
     end
   end)
 
-  signs.refresh_all_conflict_signs(session)
+  signs.refresh_all_conflict_signs(tabpage)
   auto_refresh.refresh_result_now(result_bufnr)
   vim.notify(string.format("[codediff] Accepted %d combined change(s)", count), vim.log.levels.INFO)
   return count > 0
@@ -671,22 +677,22 @@ end
 --- @param tabpage number
 --- @return boolean success
 function M.discard_all(tabpage)
-  local session = lifecycle.get_session(tabpage)
-  if not session then
+  if not lifecycle.get_session(tabpage) then
     vim.notify("[codediff] No active session", vim.log.levels.WARN)
     return false
   end
 
-  if not session.conflict_blocks or #session.conflict_blocks == 0 then
+  local conflict_blocks = lifecycle.get_conflict_blocks(tabpage)
+  if not conflict_blocks or #conflict_blocks == 0 then
     vim.notify("[codediff] No conflicts in this session", vim.log.levels.WARN)
     return false
   end
 
-  local result_bufnr = session.result_bufnr
-  local seed_lines = session.result_base_lines
+  local result_bufnr = lifecycle.get_result(tabpage)
+  local seed_lines = lifecycle.get_result_base_lines(tabpage)
   -- Use the true merge base for the slice we write back; the seed only feeds
   -- the content-search fallback in apply_to_result.
-  local base_lines = session.merge_base_lines or seed_lines
+  local base_lines = lifecycle.get_merge_base_lines(tabpage) or seed_lines
   if not result_bufnr or not seed_lines or not base_lines then
     vim.notify("[codediff] No result buffer or base lines", vim.log.levels.ERROR)
     return false
@@ -695,8 +701,8 @@ function M.discard_all(tabpage)
   local count = 0
 
   vim.api.nvim_buf_call(result_bufnr, function()
-    for i = #session.conflict_blocks, 1, -1 do
-      local block = session.conflict_blocks[i]
+    for i = #conflict_blocks, 1, -1 do
+      local block = conflict_blocks[i]
       -- For discard, we reset even resolved conflicts back to base
       if count > 0 then
         pcall(vim.cmd, "undojoin")
@@ -712,7 +718,7 @@ function M.discard_all(tabpage)
     end
   end)
 
-  signs.refresh_all_conflict_signs(session)
+  signs.refresh_all_conflict_signs(tabpage)
   auto_refresh.refresh_result_now(result_bufnr)
   vim.notify(string.format("[codediff] Reset %d conflict(s) to base", count), vim.log.levels.INFO)
   return count > 0

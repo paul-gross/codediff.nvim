@@ -7,8 +7,8 @@ local tracking = require("codediff.ui.conflict.tracking")
 --- Navigate to next conflict
 --- @param tabpage number
 function M.navigate_next_conflict(tabpage)
-  local session = lifecycle.get_session(tabpage)
-  if not session or not session.conflict_blocks then
+  local conflict_blocks = lifecycle.get_conflict_blocks(tabpage)
+  if not lifecycle.get_session(tabpage) or not conflict_blocks then
     return
   end
 
@@ -22,8 +22,8 @@ function M.navigate_next_conflict(tabpage)
   local active_indices = {}
 
   -- Pre-calculate active conflicts
-  for i, block in ipairs(session.conflict_blocks) do
-    if tracking.is_block_active(session, block) then
+  for i, block in ipairs(conflict_blocks) do
+    if tracking.is_block_active(tabpage, block) then
       total_active = total_active + 1
       table.insert(active_indices, { block = block, index = i })
     end
@@ -36,7 +36,7 @@ function M.navigate_next_conflict(tabpage)
 
   -- Find next
   for i, item in ipairs(active_indices) do
-    local start = tracking.get_block_start_line(session, item.block, current_buf)
+    local start = tracking.get_block_start_line(tabpage, item.block, current_buf)
     if start and start > cursor_line then
       target_block = item.block
       target_line = start
@@ -48,7 +48,7 @@ function M.navigate_next_conflict(tabpage)
   -- Wrap around
   if not target_line then
     local item = active_indices[1]
-    local start = tracking.get_block_start_line(session, item.block, current_buf)
+    local start = tracking.get_block_start_line(tabpage, item.block, current_buf)
     if start then
       target_block = item.block
       target_line = start
@@ -73,8 +73,8 @@ end
 --- Navigate to previous conflict
 --- @param tabpage number
 function M.navigate_prev_conflict(tabpage)
-  local session = lifecycle.get_session(tabpage)
-  if not session or not session.conflict_blocks then
+  local conflict_blocks = lifecycle.get_conflict_blocks(tabpage)
+  if not lifecycle.get_session(tabpage) or not conflict_blocks then
     return
   end
 
@@ -88,8 +88,8 @@ function M.navigate_prev_conflict(tabpage)
   local active_indices = {}
 
   -- Pre-calculate active conflicts
-  for i, block in ipairs(session.conflict_blocks) do
-    if tracking.is_block_active(session, block) then
+  for i, block in ipairs(conflict_blocks) do
+    if tracking.is_block_active(tabpage, block) then
       total_active = total_active + 1
       table.insert(active_indices, { block = block, index = i })
     end
@@ -103,7 +103,7 @@ function M.navigate_prev_conflict(tabpage)
   -- Find previous (iterate backwards through active list)
   for i = #active_indices, 1, -1 do
     local item = active_indices[i]
-    local start = tracking.get_block_start_line(session, item.block, current_buf)
+    local start = tracking.get_block_start_line(tabpage, item.block, current_buf)
     if start and start < cursor_line then
       target_block = item.block
       target_line = start
@@ -115,7 +115,7 @@ function M.navigate_prev_conflict(tabpage)
   -- Wrap around
   if not target_line then
     local item = active_indices[#active_indices]
-    local start = tracking.get_block_start_line(session, item.block, current_buf)
+    local start = tracking.get_block_start_line(tabpage, item.block, current_buf)
     if start then
       target_block = item.block
       target_line = start

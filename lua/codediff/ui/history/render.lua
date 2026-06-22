@@ -290,9 +290,13 @@ function M.create(commits, git_root, tabpage, width, opts)
     -- Check if already displaying same file
     local target_hash = base_revision or (commit_hash .. "^")
     local session = lifecycle.get_session(tabpage)
-    if not opts.force and session and session.original_revision == target_hash and session.modified_revision == commit_hash then
-      if session.modified_path == file_path or session.original_path == file_path then
-        return
+    if not opts.force and session then
+      local sess_ctx = lifecycle.get_git_context(tabpage)
+      local sess_op, sess_mp = lifecycle.get_paths(tabpage)
+      if sess_ctx and sess_ctx.original_revision == target_hash and sess_ctx.modified_revision == commit_hash then
+        if sess_mp == file_path or sess_op == file_path then
+          return
+        end
       end
     end
 
@@ -301,7 +305,7 @@ function M.create(commits, git_root, tabpage, width, opts)
       local file_status = file_data.status
       if file_status == "A" or file_status == "D" then
         local sess = lifecycle.get_session(tabpage)
-        local is_inline = sess and sess.layout == "inline"
+        local is_inline = sess and lifecycle.get_layout(tabpage) == "inline"
 
         if is_inline then
           local rev = file_status == "A" and commit_hash or target_hash
