@@ -310,8 +310,6 @@ end
 -- line_range: optional {start, end} for line-range history (git log -L)
 local function handle_history(range, file_path, flags, line_range, global_opts)
   flags = flags or {} -- Default to empty table for backward compat
-  local current_buf = vim.api.nvim_get_current_buf()
-  local current_file = vim.api.nvim_buf_get_name(current_buf)
   local cwd = vim.fn.getcwd()
 
   -- Expand file_path before async context (vim.fn.expand can't be called in fast event)
@@ -388,39 +386,18 @@ local function handle_history(range, file_path, flags, line_range, global_opts)
     end)
   end
 
-  -- Try buffer path first if available
-  if current_file ~= "" then
-    git.get_git_root(current_file, function(err_file, git_root_file)
-      if not err_file then
-        open_history(git_root_file)
-        return
-      end
-
-      git.get_git_root(cwd, function(err_cwd, git_root_cwd)
-        if not err_cwd then
-          open_history(git_root_cwd)
-          return
-        end
-        vim.schedule(function()
-          vim.notify("Not in a git repository", vim.log.levels.ERROR)
-        end)
+  git.get_git_root(cwd, function(err_cwd, git_root)
+    if err_cwd then
+      vim.schedule(function()
+        vim.notify("Not in a git repository", vim.log.levels.ERROR)
       end)
-    end)
-  else
-    git.get_git_root(cwd, function(err_cwd, git_root)
-      if err_cwd then
-        vim.schedule(function()
-          vim.notify(err_cwd, vim.log.levels.ERROR)
-        end)
-        return
-      end
-      open_history(git_root)
-    end)
-  end
+      return
+    end
+    open_history(git_root)
+  end)
 end
 
 local function handle_explorer(revision, revision2, global_opts)
-  -- Try buffer path first (consistent with original behavior), fallback to cwd
   local current_buf = vim.api.nvim_get_current_buf()
   local current_file = vim.api.nvim_buf_get_name(current_buf)
   local cwd = vim.fn.getcwd()
@@ -516,50 +493,22 @@ local function handle_explorer(revision, revision2, global_opts)
     end
   end
 
-  -- Try buffer path first if available
-  if current_file ~= "" then
-    git.get_git_root(current_file, function(err_file, git_root_file)
-      if not err_file then
-        open_explorer(git_root_file)
-        return
-      end
-
-      -- Buffer path failed, try cwd as fallback
-      git.get_git_root(cwd, function(err_cwd, git_root_cwd)
-        if not err_cwd then
-          open_explorer(git_root_cwd)
-          return
-        end
-        -- Both failed
-        vim.schedule(function()
-          vim.notify("Not in a git repository", vim.log.levels.ERROR)
-        end)
+  git.get_git_root(cwd, function(err_cwd, git_root)
+    if err_cwd then
+      vim.schedule(function()
+        vim.notify("Not in a git repository", vim.log.levels.ERROR)
       end)
-    end)
-  else
-    -- No buffer, try cwd directly
-    git.get_git_root(cwd, function(err_cwd, git_root)
-      if err_cwd then
-        vim.schedule(function()
-          vim.notify(err_cwd, vim.log.levels.ERROR)
-        end)
-        return
-      end
-      open_explorer(git_root)
-    end)
-  end
+      return
+    end
+    open_explorer(git_root)
+  end)
 end
 
 -- Wrapper for merge-base explorer mode: computes merge-base first, then opens explorer
 local function handle_explorer_merge_base(base_rev, target_rev, global_opts)
-  local current_buf = vim.api.nvim_get_current_buf()
-  local current_file = vim.api.nvim_buf_get_name(current_buf)
   local cwd = vim.fn.getcwd()
-  local buftype = vim.api.nvim_get_option_value("buftype", { buf = current_buf })
-  -- A file usually has a buftype of "" so filter out `nofile` or dashboards etc
-  local path_for_root = buftype == "" and current_file ~= "" and current_file or cwd
 
-  git.get_git_root(path_for_root, function(err_root, git_root)
+  git.get_git_root(cwd, function(err_root, git_root)
     if err_root then
       vim.schedule(function()
         vim.notify(err_root, vim.log.levels.ERROR)
