@@ -35,18 +35,22 @@ local compat = require("codediff.core.compat")
 -- Namespace for semantic token highlights
 local ns_semantic = api.nvim_create_namespace("codediff_semantic_tokens")
 
--- Track the virtual documents we have opened on a language server via
--- textDocument/didOpen, keyed by the virtual buffer number.
--- { [bufnr] = { client = <lsp client>, uri = <string> } }
+-- Track the virtual documents we have opened on a language server, keyed by
+-- URI (the same key the server uses for its own document set).
+-- { [uri] = { client = <lsp client>, bufnr = <virtual buffer number> } }
 --
 -- A virtual buffer holds a fixed git revision, so once opened it never needs
 -- re-opening or didChange. We use this registry to (a) send didOpen exactly
--- once per buffer instead of on every re-render, and (b) send a matching
+-- once per document instead of on every re-render, and (b) send a matching
 -- didClose when the buffer is destroyed by ANY teardown path. Without this,
 -- file navigation (]f/[f) re-sent didOpen on every hop and never sent
 -- didClose, leaving the server with an unbounded, ever-growing set of open
 -- documents that slowed every later request across the whole session (#1).
 local opened_documents = {}
+
+-- Side index from virtual buffer number to the URI it was opened under, since
+-- the BufWipeout/BufDelete autocmd that drives notify_close only has a bufnr.
+local bufnr_to_uri = {}
 
 -- Augroup for the per-buffer "close on destroy" autocommands.
 local close_augroup = api.nvim_create_augroup("codediff_semantic_tokens_close", { clear = true })
@@ -56,13 +60,20 @@ local close_augroup = api.nvim_create_augroup("codediff_semantic_tokens_close", 
 --- the buffer was already wiped during navigation) is a no-op.
 ---@param bufnr integer
 function M.notify_close(bufnr)
-  local entry = opened_documents[bufnr]
-  if not entry then
+  local uri = bufnr_to_uri[bufnr]
+  bufnr_to_uri[bufnr] = nil
+  if not uri then
     return
   end
-  opened_documents[bufnr] = nil
+  local entry = opened_documents[uri]
+  if not entry or entry.bufnr ~= bufnr then
+    -- A newer buffer may already own this URI (e.g. a fresh scratch buffer
+    -- re-opened the same revision/path before this one got wiped).
+    return
+  end
+  opened_documents[uri] = nil
   pcall(compat.lsp_notify, entry.client, "textDocument/didClose", {
-    textDocument = { uri = entry.uri },
+    textDocument = { uri = uri },
   })
 end
 
@@ -216,8 +227,12 @@ function M.apply_semantic_tokens(left_buf, right_buf)
     return false
   end
 
-  -- Get URI and content from left buffer
-  local left_uri = vim.uri_from_bufnr(left_buf)
+  -- Get URI and content from left buffer. Inline-layout virtual buffers are
+  -- nameless scratch buffers (vim.uri_from_bufnr on those returns the constant
+  -- "file://"), so they carry a synthetic per-(revision, path) URI tagged by
+  -- inline_view.lua; fall back to vim.uri_from_bufnr for already-named buffers
+  -- (side-by-side/conflict virtual sides).
+  local left_uri = vim.b[left_buf].codediff_lsp_uri or vim.uri_from_bufnr(left_buf)
   local left_lines = api.nvim_buf_get_lines(left_buf, 0, -1, false)
   local left_text = table.concat(left_lines, "\n")
 
@@ -230,7 +245,8 @@ function M.apply_semantic_tokens(left_buf, right_buf)
   -- unbounded set of open documents that slowed the whole session (#1).
   -- The matching didClose is sent from M.notify_close when the buffer is
   -- destroyed by any teardown path (navigation swap, cleanup, :q).
-  if not opened_documents[left_buf] then
+  local existing = opened_documents[left_uri]
+  if not existing or not api.nvim_buf_is_valid(existing.bufnr) then
     compat.lsp_notify(client, "textDocument/didOpen", {
       textDocument = {
         uri = left_uri,
@@ -239,7 +255,8 @@ function M.apply_semantic_tokens(left_buf, right_buf)
         text = left_text,
       },
     })
-    opened_documents[left_buf] = { client = client, uri = left_uri }
+    opened_documents[left_uri] = { client = client, bufnr = left_buf }
+    bufnr_to_uri[left_buf] = left_uri
 
     api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
       group = close_augroup,

@@ -8,6 +8,7 @@ local config = require("codediff.config")
 local diff_module = require("codediff.core.diff")
 local inline = require("codediff.ui.inline")
 local semantic = require("codediff.ui.semantic_tokens")
+local virtual_file = require("codediff.core.virtual_file")
 local layout = require("codediff.ui.layout")
 local welcome_window = require("codediff.ui.view.welcome_window")
 
@@ -205,6 +206,7 @@ function M.create(session_config, filetype, on_ready)
     -- the buffer when no window displays it. Use scratch buffer instead.
     local orig_buf = vim.api.nvim_create_buf(false, true)
     vim.bo[orig_buf].buftype = "nofile"
+    vim.b[orig_buf].codediff_lsp_uri = virtual_file.create_url(session_config.git_root, session_config.original_revision, session_config.original_path)
     original_info.bufnr = orig_buf
   elseif original_info.needs_edit then
     local bufnr = vim.fn.bufadd(original_info.target)
@@ -393,11 +395,16 @@ function M.update(tabpage, session_config, auto_scroll_to_first_hunk)
 
   local orig_buf = vim.api.nvim_create_buf(false, true)
   vim.bo[orig_buf].buftype = "nofile"
+  if original_is_virtual then
+    vim.b[orig_buf].codediff_lsp_uri =
+      virtual_file.create_url(session_config.git_root, session_config.original_revision, session_config.original_path or session_config.modified_path)
+  end
 
   local mod_buf
   if modified_is_virtual then
     mod_buf = vim.api.nvim_create_buf(false, true)
     vim.bo[mod_buf].buftype = "nofile"
+    vim.b[mod_buf].codediff_lsp_uri = virtual_file.create_url(session_config.git_root, session_config.modified_revision, session_config.modified_path)
     vim.bo[mod_buf].modifiable = true
     vim.api.nvim_win_set_buf(modified_win, mod_buf)
     local ft = vim.filetype.match({ filename = session_config.modified_path })
